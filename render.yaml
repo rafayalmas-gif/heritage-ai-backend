@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: heritage-ai-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: VERIFY_TOKEN
+        value: heritage_verify_123
+      - key: WHATSAPP_PHONE_ID
+        value: "1189572340903084"
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: STAFF_NUMBERS
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini

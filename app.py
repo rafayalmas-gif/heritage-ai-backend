@@ -35,6 +35,8 @@ cloudinary.config(
 HERITAGE_SYSTEM_PROMPT = """
 You are Heritage Jewelry Design Director, expert in Pakistani, South Asian, Mughal-inspired, bridal, kundan, meenakari, silver, gold, moissanite, lab diamond, and colored-stone jewelry.
 
+Always study uploaded reference images before responding.
+
 Never create generic Western minimalist jewelry.
 
 Prioritize emerald, ruby, sapphire, pearl, moissanite, lab diamond, kundan-inspired layouts, arches, jharokhas, jaali, paisley, lotus, floral vines, regal drops, and handcrafted heritage details.
@@ -43,7 +45,7 @@ Every design must be commercially viable, manufacturable, premium, Instagram-wor
 
 When an image is uploaded, analyze design, stone placement, balance, wearability, manufacturability, and commercial appeal.
 
-When model visualization is requested, create Pakistani, Indian, British Asian, or Middle Eastern model styling. Jewelry must remain the hero.
+When model visualization is requested, preserve the uploaded jewelry design as much as possible. Jewelry must remain the hero.
 
 Manager approval required before customer sharing.
 """
@@ -122,7 +124,7 @@ def command_instructions(text):
     lower = (text or "").lower().strip()
 
     if lower.startswith("/model"):
-        return "Analyze uploaded jewelry and create a luxury South Asian model visualization."
+        return "Analyze uploaded jewelry and create model visualization guidance."
     if lower.startswith("/stone"):
         return "Analyze uploaded jewelry and create stone color change concept."
     if lower.startswith("/caption"):
@@ -170,6 +172,36 @@ def call_openai(text, image_bytes=None, image_mime="image/jpeg"):
     return response.output_text
 
 
+def upload_generated_image_to_cloudinary(image_bytes):
+    upload_result = cloudinary.uploader.upload(
+        BytesIO(image_bytes),
+        resource_type="image",
+        folder="heritage-ai-designer",
+    )
+    return upload_result["secure_url"]
+
+
+def edit_image_and_upload(image_bytes, prompt):
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    image_file = BytesIO(image_bytes)
+    image_file.name = "heritage_reference.png"
+
+    result = client.images.edit(
+        model="gpt-image-1",
+        image=image_file,
+        prompt=prompt,
+        size="1024x1024",
+        quality="medium",
+        n=1,
+    )
+
+    image_base64 = result.data[0].b64_json
+    output_bytes = base64.b64decode(image_base64)
+
+    return upload_generated_image_to_cloudinary(output_bytes)
+
+
 def generate_image_and_upload(prompt):
     client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -182,35 +214,32 @@ def generate_image_and_upload(prompt):
     )
 
     image_base64 = result.data[0].b64_json
-    image_bytes = base64.b64decode(image_base64)
+    output_bytes = base64.b64decode(image_base64)
 
-    upload_result = cloudinary.uploader.upload(
-        BytesIO(image_bytes),
-        resource_type="image",
-        folder="heritage-ai-designer",
-    )
-
-    return upload_result["secure_url"]
+    return upload_generated_image_to_cloudinary(output_bytes)
 
 
 def build_model_image_prompt(analysis, staff_text):
     return f"""
-Create a luxury jewelry campaign image for Heritage Jewellers.
-
-Uploaded jewelry analysis:
-{analysis}
+Use the uploaded jewelry image as the primary visual reference.
 
 Staff request:
 {staff_text}
 
-Visual requirements:
-- Pakistani or South Asian model
-- Elegant bridal or party-wear styling
-- Jewelry inspired by uploaded product must remain the hero
-- Premium Heritage Jewellers look
-- Mughal-inspired luxury mood
-- Soft studio/campaign lighting
-- High-end jewelry photography
+Jewelry analysis:
+{analysis}
+
+Create a realistic luxury campaign visualization for Heritage Jewellers.
+
+Critical requirements:
+- Preserve the uploaded jewelry design as closely as possible
+- Do not invent a different jewelry item
+- Keep the same shape, stone layout, proportions, metal color, and design language
+- Place the jewelry naturally on a Pakistani or South Asian model
+- Jewelry must remain the hero
+- Premium bridal or party-wear styling
+- Mughal-inspired Heritage Jewellers luxury mood
+- Soft high-end campaign lighting
 - No text
 - No logo
 - No Western minimalist styling
@@ -219,21 +248,24 @@ Visual requirements:
 
 def build_stone_image_prompt(analysis, staff_text):
     return f"""
-Create a high-end product visualization for Heritage Jewellers.
-
-Uploaded jewelry analysis:
-{analysis}
+Use the uploaded jewelry image as the primary visual reference.
 
 Staff request:
 {staff_text}
 
-Visual requirements:
-- Keep jewelry design inspired by uploaded product
-- Change stone color as requested
+Jewelry analysis:
+{analysis}
+
+Create a realistic product visualization for Heritage Jewellers.
+
+Critical requirements:
+- Preserve the exact jewelry design as closely as possible
+- Do not redesign the jewelry
+- Do not invent a different product
+- Keep the same shape, stone placement, proportions, metal structure, and angle
+- Only change the requested stone color
+- Keep metal color polished and realistic
 - Premium white background product image
-- Gold/silver metal should remain polished and realistic
-- Stones should look realistic and commercially viable
-- Heritage Jewellers premium Pakistani/South Asian aesthetic
 - No text
 - No logo
 """
@@ -304,10 +336,10 @@ def receive_webhook():
         analysis = call_openai(text, image_bytes, image_mime)
 
         if lower.startswith("/model") and image_bytes:
-            send_whatsapp_text(sender, "Generating Heritage model visualization. Please wait...")
+            send_whatsapp_text(sender, "Generating model visualization using your uploaded jewelry as reference. Please wait...")
 
             image_prompt = build_model_image_prompt(analysis, text)
-            image_url = generate_image_and_upload(image_prompt)
+            image_url = edit_image_and_upload(image_bytes, image_prompt)
 
             send_whatsapp_image(
                 sender,
@@ -318,10 +350,10 @@ def receive_webhook():
             return jsonify({"status": "model_image_sent"}), 200
 
         if lower.startswith("/stone") and image_bytes:
-            send_whatsapp_text(sender, "Generating Heritage stone-change concept. Please wait...")
+            send_whatsapp_text(sender, "Generating stone-change concept using your uploaded jewelry as reference. Please wait...")
 
             image_prompt = build_stone_image_prompt(analysis, text)
-            image_url = generate_image_and_upload(image_prompt)
+            image_url = edit_image_and_upload(image_bytes, image_prompt)
 
             send_whatsapp_image(
                 sender,

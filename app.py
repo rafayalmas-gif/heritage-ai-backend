@@ -2,13 +2,14 @@ import os
 import json
 import base64
 import requests
+from io import BytesIO
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify
 
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
+from flask import Flask, request, jsonify
+from openai import OpenAI
+
+import cloudinary
+import cloudinary.uploader
 
 app = Flask(__name__)
 
@@ -16,10 +17,36 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "heritage_verify_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 STAFF_NUMBERS = [x.strip() for x in os.getenv("STAFF_NUMBERS", "").split(",") if x.strip()]
 LOG_FILE = os.getenv("LOG_FILE", "logs.jsonl")
 
-HERITAGE_SYSTEM_PROMPT = """You are Heritage Jewelry Design Director, expert in Pakistani, South Asian, Mughal-inspired, bridal, kundan, meenakari, silver, gold, moissanite, lab diamond, and colored-stone jewelry. Create designs suitable for Heritage Jewellers. Never create generic Western minimalist jewelry. Prioritize emerald, ruby, sapphire, pearl, moissanite, lab diamond, kundan-inspired layouts, arches, jharokhas, jaali, paisley, lotus, floral vines, regal drops, and handcrafted heritage details. Every design must be commercially viable, manufacturable, premium, Instagram-worthy, and suitable for Heritage customers. When an image is uploaded, analyze design, stone placement, balance, wearability, manufacturability, and commercial appeal. When a dress is uploaded, recommend matching jewelry, stone colors, metal color, earrings, necklace, bangle/bracelet, ring, makeup, hairstyle, clutch, and styling direction. When stone change is requested, suggest at least three realistic stone variations with visual impact, outfit compatibility, luxury appeal, Heritage appeal, and commercial potential. When model visualization is requested, use Pakistani, Indian, British Asian, or Middle Eastern model styling. Jewelry must remain the hero. Score every design on Heritage DNA, luxury appeal, commercial potential, manufacturability, Instagram appeal, and bestseller potential. If any score is below 8/10, improve before final answer. Add: Manager approval required before customer sharing."""
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "")
+
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
+    secure=True,
+)
+
+HERITAGE_SYSTEM_PROMPT = """
+You are Heritage Jewelry Design Director, expert in Pakistani, South Asian, Mughal-inspired, bridal, kundan, meenakari, silver, gold, moissanite, lab diamond, and colored-stone jewelry.
+
+Never create generic Western minimalist jewelry.
+
+Prioritize emerald, ruby, sapphire, pearl, moissanite, lab diamond, kundan-inspired layouts, arches, jharokhas, jaali, paisley, lotus, floral vines, regal drops, and handcrafted heritage details.
+
+Every design must be commercially viable, manufacturable, premium, Instagram-worthy, and suitable for Heritage Jewellers customers.
+
+When an image is uploaded, analyze design, stone placement, balance, wearability, manufacturability, and commercial appeal.
+
+When model visualization is requested, create Pakistani, Indian, British Asian, or Middle Eastern model styling. Jewelry must remain the hero.
+
+Manager approval required before customer sharing.
+"""
 
 COMMAND_HELP = """/stone = change stone color
 /model = show jewelry on Pakistani/South Asian model
@@ -30,12 +57,14 @@ COMMAND_HELP = """/stone = change stone color
 /product = website product description
 /cad = CAD/manufacturing brief"""
 
+
 def log_event(data):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(data, ensure_ascii=False) + "\n")
     except Exception as exc:
         print("LOG_ERROR", str(exc), flush=True)
+
 
 def send_whatsapp_text(to, body):
     url = f"https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_ID}/messages"
@@ -50,8 +79,29 @@ def send_whatsapp_text(to, body):
         "text": {"preview_url": False, "body": body[:4096]},
     }
     r = requests.post(url, headers=headers, json=payload, timeout=30)
-    print("WA_SEND", r.status_code, r.text[:500], flush=True)
+    print("WA_TEXT_SEND", r.status_code, r.text[:500], flush=True)
     return r
+
+
+def send_whatsapp_image(to, image_url, caption=""):
+    url = f"https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "image",
+        "image": {
+            "link": image_url,
+            "caption": caption[:1024],
+        },
+    }
+    r = requests.post(url, headers=headers, json=payload, timeout=30)
+    print("WA_IMAGE_SEND", r.status_code, r.text[:500], flush=True)
+    return r
+
 
 def get_media_url(media_id):
     url = f"https://graph.facebook.com/v20.0/{media_id}"
@@ -60,113 +110,243 @@ def get_media_url(media_id):
     r.raise_for_status()
     return r.json().get("url")
 
+
 def download_media(media_url):
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
     r = requests.get(media_url, headers=headers, timeout=60)
     r.raise_for_status()
     return r.content, r.headers.get("Content-Type", "image/jpeg")
 
+
 def command_instructions(text):
     lower = (text or "").lower().strip()
-    if lower.startswith("/stone"):
-        return "Staff requested stone change. Suggest at least three realistic stone variations with commercial analysis."
+
     if lower.startswith("/model"):
-        return "Staff requested model visualization. Analyze product and create a detailed image-generation prompt for a Pakistani/South Asian model wearing the jewelry. Jewelry must remain the hero."
-    if lower.startswith("/dress"):
-        return "Staff requested dress matching. Recommend matching jewelry, stones, metal tone, earrings, necklace, bangles/bracelet, ring, makeup, hairstyle, clutch, and styling direction."
-    if lower.startswith("/collection"):
-        return "Staff requested full collection. Create necklace/earrings/ring/bangle/bracelet variations from the uploaded design."
-    if lower.startswith("/bridal"):
-        return "Staff requested bridal conversion. Convert the design into a premium Heritage bridal set."
+        return "Analyze uploaded jewelry and create a luxury South Asian model visualization."
+    if lower.startswith("/stone"):
+        return "Analyze uploaded jewelry and create stone color change concept."
     if lower.startswith("/caption"):
-        return "Staff requested Instagram/social caption. Write premium captions with hashtags suitable for Heritage Jewellers."
+        return "Write premium Instagram caption for Heritage Jewellers."
     if lower.startswith("/product"):
-        return "Staff requested website product description. Write title, short description, detailed description, material notes, styling, and SEO keywords."
+        return "Write website product description."
+    if lower.startswith("/dress"):
+        return "Match jewelry with dress styling."
+    if lower.startswith("/collection"):
+        return "Create full collection from design."
+    if lower.startswith("/bridal"):
+        return "Convert design into bridal set."
     if lower.startswith("/cad"):
-        return "Staff requested CAD/manufacturing brief. Provide manufacturable CAD notes, stone sizes/placement suggestions, finishing, setting type, and production cautions."
-    return "Staff did not use a known command. Helpfully answer and include available commands."
+        return "Create CAD/manufacturing brief."
+
+    return "Answer helpfully and include available commands."
+
 
 def call_openai(text, image_bytes=None, image_mime="image/jpeg"):
     if not OPENAI_API_KEY:
-        return "OpenAI API key is not configured yet. Please add OPENAI_API_KEY in Render environment variables."
+        return "OpenAI API key is not configured yet."
+
     client = OpenAI(api_key=OPENAI_API_KEY)
+
     user_content = [
         {
             "type": "input_text",
-            "text": f"Staff message: {text or ''}\n\nTask: {command_instructions(text)}\n\nAvailable commands:\n{COMMAND_HELP}"
+            "text": f"Staff message: {text or ''}\n\nTask: {command_instructions(text)}\n\nCommands:\n{COMMAND_HELP}",
         }
     ]
+
     if image_bytes:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         user_content.append({
             "type": "input_image",
-            "image_url": f"data:{image_mime};base64,{b64}"
+            "image_url": f"data:{image_mime};base64,{b64}",
         })
+
     response = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        model=OPENAI_MODEL,
         instructions=HERITAGE_SYSTEM_PROMPT,
         input=[{"role": "user", "content": user_content}],
     )
+
     return response.output_text
+
+
+def generate_image_and_upload(prompt):
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    result = client.images.generate(
+        model="gpt-image-1",
+        prompt=prompt,
+        size="1024x1024",
+        quality="medium",
+        n=1,
+    )
+
+    image_base64 = result.data[0].b64_json
+    image_bytes = base64.b64decode(image_base64)
+
+    upload_result = cloudinary.uploader.upload(
+        BytesIO(image_bytes),
+        resource_type="image",
+        folder="heritage-ai-designer",
+    )
+
+    return upload_result["secure_url"]
+
+
+def build_model_image_prompt(analysis, staff_text):
+    return f"""
+Create a luxury jewelry campaign image for Heritage Jewellers.
+
+Uploaded jewelry analysis:
+{analysis}
+
+Staff request:
+{staff_text}
+
+Visual requirements:
+- Pakistani or South Asian model
+- Elegant bridal or party-wear styling
+- Jewelry inspired by uploaded product must remain the hero
+- Premium Heritage Jewellers look
+- Mughal-inspired luxury mood
+- Soft studio/campaign lighting
+- High-end jewelry photography
+- No text
+- No logo
+- No Western minimalist styling
+"""
+
+
+def build_stone_image_prompt(analysis, staff_text):
+    return f"""
+Create a high-end product visualization for Heritage Jewellers.
+
+Uploaded jewelry analysis:
+{analysis}
+
+Staff request:
+{staff_text}
+
+Visual requirements:
+- Keep jewelry design inspired by uploaded product
+- Change stone color as requested
+- Premium white background product image
+- Gold/silver metal should remain polished and realistic
+- Stones should look realistic and commercially viable
+- Heritage Jewellers premium Pakistani/South Asian aesthetic
+- No text
+- No logo
+"""
+
 
 @app.route("/", methods=["GET"])
 def home():
     return "Heritage WhatsApp AI Designer backend is running.", 200
+
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
+
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return challenge or "", 200
+
     return "Verification failed", 403
+
 
 @app.route("/webhook", methods=["POST"])
 def receive_webhook():
     payload = request.get_json(silent=True) or {}
     log_event({"time": datetime.now(timezone.utc).isoformat(), "type": "incoming", "payload": payload})
+
     try:
         entry = payload.get("entry", [])[0]
         changes = entry.get("changes", [])[0]
         value = changes.get("value", {})
         messages = value.get("messages", [])
+
         if not messages:
             return jsonify({"status": "ignored"}), 200
+
         msg = messages[0]
         sender = msg.get("from")
+
         if STAFF_NUMBERS and sender not in STAFF_NUMBERS:
             send_whatsapp_text(sender, "Access denied. This Heritage AI Designer number is staff-only.")
             return jsonify({"status": "blocked"}), 200
+
         text = ""
         image_bytes = None
         image_mime = "image/jpeg"
+
         if msg.get("type") == "text":
             text = msg.get("text", {}).get("body", "")
+
         elif msg.get("type") == "image":
             text = msg.get("image", {}).get("caption", "")
             media_id = msg.get("image", {}).get("id")
+
             if media_id:
                 media_url = get_media_url(media_id)
                 image_bytes, image_mime = download_media(media_url)
+
         else:
-            send_whatsapp_text(sender, "Please send a text command or image with caption. Example: /stone change emerald to ruby")
+            send_whatsapp_text(sender, "Please send a text command or image with caption. Example: /model")
             return jsonify({"status": "unsupported"}), 200
+
         if not text:
-            text = "Analyze this image for Heritage Jewellers and suggest improvements."
-        reply = call_openai(text, image_bytes, image_mime)
-        reply += "\n\nManager approval required before customer sharing."
+            text = "Analyze this image for Heritage Jewellers."
+
+        lower = text.lower().strip()
+
+        analysis = call_openai(text, image_bytes, image_mime)
+
+        if lower.startswith("/model") and image_bytes:
+            send_whatsapp_text(sender, "Generating Heritage model visualization. Please wait...")
+
+            image_prompt = build_model_image_prompt(analysis, text)
+            image_url = generate_image_and_upload(image_prompt)
+
+            send_whatsapp_image(
+                sender,
+                image_url,
+                "Heritage AI model visualization. Manager approval required before customer sharing.",
+            )
+
+            return jsonify({"status": "model_image_sent"}), 200
+
+        if lower.startswith("/stone") and image_bytes:
+            send_whatsapp_text(sender, "Generating Heritage stone-change concept. Please wait...")
+
+            image_prompt = build_stone_image_prompt(analysis, text)
+            image_url = generate_image_and_upload(image_prompt)
+
+            send_whatsapp_image(
+                sender,
+                image_url,
+                "Heritage AI stone-change concept. Manager approval required before customer sharing.",
+            )
+
+            return jsonify({"status": "stone_image_sent"}), 200
+
+        reply = analysis + "\n\nManager approval required before customer sharing."
         send_whatsapp_text(sender, reply)
-        log_event({"time": datetime.now(timezone.utc).isoformat(), "type": "reply", "to": sender, "reply": reply})
+
         return jsonify({"status": "ok"}), 200
+
     except Exception as exc:
         print("WEBHOOK_ERROR", str(exc), flush=True)
+
         try:
             sender = payload["entry"][0]["changes"][0]["value"]["messages"][0]["from"]
-            send_whatsapp_text(sender, "Sorry, Heritage AI had an error processing this request. Please try again.")
+            send_whatsapp_text(sender, f"Sorry, Heritage AI had an error: {str(exc)[:500]}")
         except Exception:
             pass
+
         return jsonify({"status": "error", "message": str(exc)}), 200
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))

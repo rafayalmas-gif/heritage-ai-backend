@@ -297,6 +297,11 @@ def receive_webhook():
         entry = payload.get("entry", [])[0]
         changes = entry.get("changes", [])[0]
         value = changes.get("value", {})
+        
+        # Ignore WhatsApp delivery/status updates
+        if "statuses" in value:
+        return jsonify({"status": "status_update"}), 200
+        
         messages = value.get("messages", [])
 
         if not messages:

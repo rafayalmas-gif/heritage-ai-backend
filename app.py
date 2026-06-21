@@ -3,18 +3,18 @@ import json
 import base64
 import requests
 import threading
-import re
 from io import BytesIO
 from datetime import datetime, timezone
 
-import numpy as np
-import cv2
-from PIL import Image, ImageEnhance, ImageOps
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
 import cloudinary
 import cloudinary.uploader
+
+from PIL import Image, ImageEnhance, ImageFilter
+import cv2
+import numpy as np
 
 try:
     from rembg import remove
@@ -24,18 +24,25 @@ except Exception:
 
 app = Flask(__name__)
 
+# ----------------------------
+# Environment variables
+# ----------------------------
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "heritage_verify_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+
 STAFF_NUMBERS = [x.strip() for x in os.getenv("STAFF_NUMBERS", "").split(",") if x.strip()]
 LOG_FILE = os.getenv("LOG_FILE", "logs.jsonl")
 
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "")
+
+ENABLE_EXACT_STONE_EDIT = os.getenv("ENABLE_EXACT_STONE_EDIT", "true").lower() == "true"
+ENABLE_PRODUCT_COMPOSITING = os.getenv("ENABLE_PRODUCT_COMPOSITING", "true").lower() == "true"
 
 cloudinary.config(
     cloud_name=CLOUDINARY_CLOUD_NAME,
@@ -50,16 +57,15 @@ PROCESSING_MESSAGE_IDS = set()
 HERITAGE_SYSTEM_PROMPT = """
 You are Heritage Jewelry Design Director for Heritage Jewellers.
 
-You are expert in Pakistani, South Asian, Mughal-inspired, bridal, kundan, meenakari,
-silver, gold, moissanite, lab diamond, and coloured-stone jewelry.
+You are expert in Pakistani, South Asian, Mughal-inspired, bridal, kundan, meenakari, silver,
+gold, moissanite, lab diamond, and coloured-stone jewelry.
 
 Always study uploaded reference images before responding.
 
 Never create generic Western minimalist jewelry.
 
-Prioritize emerald, ruby, sapphire, pearl, moissanite, lab diamond,
-kundan-inspired layouts, arches, jharokhas, jaali, paisley, lotus,
-floral vines, regal drops, and handcrafted heritage details.
+Prioritize emerald, ruby, sapphire, pearl, moissanite, lab diamond, kundan-inspired layouts,
+arches, jharokhas, jaali, paisley, lotus, floral vines, regal drops, and handcrafted heritage details.
 
 When an image is uploaded, analyze:
 - jewelry category
@@ -72,14 +78,11 @@ When an image is uploaded, analyze:
 - commercial appeal
 - manufacturability
 
-For model visualization, do not redesign the uploaded jewelry.
-For stone replacement, only change the requested stone colour.
-
 Manager approval required before customer sharing.
 """
 
-COMMAND_HELP = """/stone = exact stone color replacement
-/model = show exact uploaded jewelry on Pakistani/South Asian model
+COMMAND_HELP = """/stone = exact stone colour change
+/model = show exact uploaded product on Pakistani/South Asian model
 /dress = match dress with jewelry
 /collection = create full collection
 /bridal = bridal version
@@ -88,10 +91,9 @@ COMMAND_HELP = """/stone = exact stone color replacement
 /cad = CAD/manufacturing brief"""
 
 
-# -------------------------
-# Utilities
-# -------------------------
-
+# ----------------------------
+# Basic utilities
+# ----------------------------
 def log_event(data):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -127,7 +129,10 @@ def send_whatsapp_image(to, image_url, caption=""):
         "messaging_product": "whatsapp",
         "to": to,
         "type": "image",
-        "image": {"link": image_url, "caption": caption[:1024]},
+        "image": {
+            "link": image_url,
+            "caption": caption[:1024],
+        },
     }
     r = requests.post(url, headers=headers, json=payload, timeout=30)
     print("WA_IMAGE_SEND", r.status_code, r.text[:500], flush=True)
@@ -149,12 +154,6 @@ def download_media(media_url):
     return r.content, r.headers.get("Content-Type", "image/jpeg")
 
 
-def pil_to_png_bytes(img: Image.Image) -> bytes:
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
 def upload_image_to_cloudinary(image_bytes, folder="heritage-ai-designer"):
     upload_result = cloudinary.uploader.upload(
         BytesIO(image_bytes),
@@ -164,16 +163,26 @@ def upload_image_to_cloudinary(image_bytes, folder="heritage-ai-designer"):
     return upload_result["secure_url"]
 
 
-# -------------------------
-# OpenAI text / analysis
-# -------------------------
+def pil_to_png_bytes(img):
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
 
+
+def open_image_rgba(image_bytes):
+    return Image.open(BytesIO(image_bytes)).convert("RGBA")
+
+
+# ----------------------------
+# OpenAI text / analysis
+# ----------------------------
 def command_instructions(text):
     lower = (text or "").lower().strip()
+
     if lower.startswith("/model"):
-        return "Analyze uploaded jewelry for exact product-on-model compositing. Do not redesign."
+        return "Analyze product category and give styling notes for exact product compositing."
     if lower.startswith("/stone"):
-        return "Analyze uploaded jewelry for exact stone colour replacement. Do not redesign."
+        return "Analyze which stone colour should be changed and which areas must remain unchanged."
     if lower.startswith("/caption"):
         return "Write premium Instagram caption for Heritage Jewellers."
     if lower.startswith("/product"):
@@ -186,6 +195,7 @@ def command_instructions(text):
         return "Convert design into bridal set."
     if lower.startswith("/cad"):
         return "Create CAD/manufacturing brief."
+
     return "Answer helpfully and include available commands."
 
 
@@ -195,10 +205,12 @@ def call_openai(text, image_bytes=None, image_mime="image/jpeg"):
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    user_content = [{
-        "type": "input_text",
-        "text": f"Staff message: {text or ''}\n\nTask: {command_instructions(text)}\n\nCommands:\n{COMMAND_HELP}",
-    }]
+    user_content = [
+        {
+            "type": "input_text",
+            "text": f"Staff message: {text or ''}\n\nTask: {command_instructions(text)}\n\nCommands:\n{COMMAND_HELP}",
+        }
+    ]
 
     if image_bytes:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -212,168 +224,157 @@ def call_openai(text, image_bytes=None, image_mime="image/jpeg"):
         instructions=HERITAGE_SYSTEM_PROMPT,
         input=[{"role": "user", "content": user_content}],
     )
+
     return response.output_text
 
 
-def detect_product_type(text, image_bytes, image_mime):
-    """Small classifier used for compositing placement."""
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        b64 = base64.b64encode(image_bytes).decode("utf-8")
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            instructions=(
-                "Classify the uploaded jewelry into one word only: "
-                "earrings, ring, pendant, necklace, bracelet, bangle, set, unknown."
-            ),
-            input=[{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": f"User request: {text}"},
-                    {"type": "input_image", "image_url": f"data:{image_mime};base64,{b64}"},
-                ],
-            }],
-        )
-        result = response.output_text.lower()
-        for k in ["earrings", "ring", "pendant", "necklace", "bracelet", "bangle", "set"]:
-            if k in result:
-                return k
-    except Exception as exc:
-        print("DETECT_PRODUCT_TYPE_ERROR", str(exc), flush=True)
-
+# ----------------------------
+# Exact /stone using image processing
+# ----------------------------
+def requested_target_color(text):
     lower = (text or "").lower()
-    if "ring" in lower:
-        return "ring"
-    if "necklace" in lower:
-        return "necklace"
-    if "pendant" in lower:
-        return "pendant"
-    if "bracelet" in lower or "bangle" in lower:
-        return "bracelet"
-    return "earrings"
 
+    if "ruby" in lower or "red" in lower:
+        return "ruby"
+    if "sapphire" in lower or "blue" in lower:
+        return "sapphire"
+    if "emerald" in lower or "green" in lower:
+        return "emerald"
+    if "pink" in lower or "morganite" in lower:
+        return "pink"
+    if "black" in lower or "onyx" in lower:
+        return "black"
+    if "pearl" in lower or "white" in lower:
+        return "white"
 
-# -------------------------
-# EXACT /stone processing
-# -------------------------
-
-TARGET_HUES = {
-    "ruby": 0,
-    "red": 0,
-    "maroon": 175,
-    "emerald": 60,
-    "green": 60,
-    "sapphire": 115,
-    "blue": 115,
-    "navy": 120,
-    "yellow": 28,
-    "champagne": 22,
-    "pink": 165,
-    "purple": 140,
-    "amethyst": 140,
-    "black": None,
-    "white": None,
-}
-
-
-def target_colour_from_text(text):
-    lower = (text or "").lower()
-    for word in ["ruby", "red", "emerald", "green", "sapphire", "blue", "navy",
-                 "yellow", "champagne", "pink", "purple", "amethyst", "black", "white", "maroon"]:
-        if word in lower:
-            return word
     return "ruby"
 
 
-def build_coloured_stone_mask(rgb_arr):
-    """Detect saturated coloured stones, avoiding diamonds/white background/gold metal."""
-    hsv = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2HSV)
-    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+def hue_for_target(target):
+    # OpenCV hue is 0-179
+    return {
+        "ruby": 0,
+        "sapphire": 115,
+        "emerald": 60,
+        "pink": 165,
+        "black": 0,
+        "white": 0,
+    }.get(target, 0)
 
-    # Saturated non-white, non-gray coloured areas are likely stones.
-    mask = ((s > 45) & (v > 45)).astype(np.uint8) * 255
 
-    # Exclude common yellow-gold metal range to avoid changing gold.
-    gold_mask = (((h >= 15) & (h <= 38) & (s > 35) & (v > 70))).astype(np.uint8) * 255
-    mask = cv2.bitwise_and(mask, cv2.bitwise_not(gold_mask))
+def get_source_mask(hsv, text):
+    """
+    Creates a mask for common colored gemstones.
+    Default: detect green emerald areas.
+    If command mentions changing red/ruby, detect red. If blue/sapphire, detect blue.
+    """
+    lower = (text or "").lower()
 
-    # Clean mask.
+    if "ruby to" in lower or "red to" in lower or "change ruby" in lower or "change red" in lower:
+        mask1 = cv2.inRange(hsv, np.array([0, 40, 40]), np.array([12, 255, 255]))
+        mask2 = cv2.inRange(hsv, np.array([170, 40, 40]), np.array([179, 255, 255]))
+        mask = cv2.bitwise_or(mask1, mask2)
+    elif "sapphire to" in lower or "blue to" in lower or "change sapphire" in lower or "change blue" in lower:
+        mask = cv2.inRange(hsv, np.array([90, 40, 40]), np.array([135, 255, 255]))
+    else:
+        # default emerald/green stones
+        mask = cv2.inRange(hsv, np.array([32, 35, 35]), np.array([92, 255, 255]))
+
+    # Clean mask
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.GaussianBlur(mask, (5, 5), 0)
     return mask
 
 
-def exact_stone_colour_edit(image_bytes, target_word):
+def exact_stone_colour_change(image_bytes, text):
     """
-    Pixel-level stone colour edit.
-    This preserves prongs, diamonds, metal, layout, perspective, and background.
+    Pixel-level stone recolor. Keeps product shape, diamonds, metal, prongs, and background.
+    Best for emerald/ruby/sapphire visible stones.
     """
     img = Image.open(BytesIO(image_bytes)).convert("RGB")
     rgb = np.array(img)
+
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    mask = get_source_mask(hsv, text)
+    target = requested_target_color(text)
 
-    mask = build_coloured_stone_mask(rgb)
+    result_hsv = hsv.copy()
 
-    target_word = target_word.lower().strip()
-    hue = TARGET_HUES.get(target_word, 0)
-
-    edited_hsv = hsv.copy()
-
-    if target_word == "black":
-        edited_hsv[:, :, 2][mask > 0] = np.clip(edited_hsv[:, :, 2][mask > 0] * 0.25, 0, 255)
-        edited_hsv[:, :, 1][mask > 0] = np.clip(edited_hsv[:, :, 1][mask > 0] * 0.55, 0, 255)
-    elif target_word == "white":
-        edited_hsv[:, :, 1][mask > 0] = 15
-        edited_hsv[:, :, 2][mask > 0] = np.maximum(edited_hsv[:, :, 2][mask > 0], 210)
+    if target == "black":
+        result_hsv[:, :, 1][mask > 0] = 30
+        result_hsv[:, :, 2][mask > 0] = np.clip(result_hsv[:, :, 2][mask > 0] * 0.35, 0, 255)
+    elif target == "white":
+        result_hsv[:, :, 1][mask > 0] = 15
+        result_hsv[:, :, 2][mask > 0] = np.clip(result_hsv[:, :, 2][mask > 0] * 1.35, 0, 255)
     else:
-        edited_hsv[:, :, 0][mask > 0] = hue
-        edited_hsv[:, :, 1][mask > 0] = np.maximum(edited_hsv[:, :, 1][mask > 0], 120)
-        edited_hsv[:, :, 2][mask > 0] = np.maximum(edited_hsv[:, :, 2][mask > 0], 80)
+        result_hsv[:, :, 0][mask > 0] = hue_for_target(target)
+        result_hsv[:, :, 1][mask > 0] = np.clip(result_hsv[:, :, 1][mask > 0] * 1.20, 0, 255)
+        result_hsv[:, :, 2][mask > 0] = np.clip(result_hsv[:, :, 2][mask > 0] * 1.03, 0, 255)
 
-    edited_rgb = cv2.cvtColor(edited_hsv, cv2.COLOR_HSV2RGB)
+    changed_rgb = cv2.cvtColor(result_hsv, cv2.COLOR_HSV2RGB)
 
-    # Soft blend only on mask edges for natural result.
-    soft_mask = cv2.GaussianBlur(mask, (7, 7), 0).astype(np.float32) / 255.0
-    soft_mask = soft_mask[:, :, None]
-    final = (edited_rgb * soft_mask + rgb * (1 - soft_mask)).astype(np.uint8)
+    # Feather mask and blend for realistic edges
+    alpha = (mask.astype(np.float32) / 255.0)[..., None]
+    blended = (changed_rgb * alpha + rgb * (1 - alpha)).astype(np.uint8)
 
-    out = Image.fromarray(final)
+    out = Image.fromarray(blended).convert("RGBA")
     return pil_to_png_bytes(out)
 
 
-# -------------------------
-# /model compositing
-# -------------------------
+# ----------------------------
+# Product cutout / compositing for /model
+# ----------------------------
+def remove_background_from_product(image_bytes):
+    if remove is None:
+        # fallback: return original image with alpha as-is
+        return open_image_rgba(image_bytes)
 
-def generate_model_base(product_type):
-    """Generate model image with no jewelry; exact jewelry is overlaid afterward."""
+    try:
+        cutout_bytes = remove(image_bytes)
+        return Image.open(BytesIO(cutout_bytes)).convert("RGBA")
+    except Exception as exc:
+        print("REMBG_ERROR", str(exc), flush=True)
+        return open_image_rgba(image_bytes)
+
+
+def trim_transparent(img):
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    bbox = img.getbbox()
+    if bbox:
+        return img.crop(bbox)
+    return img
+
+
+def generate_model_without_jewelry(text):
+    """
+    Generates a model base image WITHOUT jewelry, so we can overlay the exact product.
+    """
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    if product_type == "ring":
-        prompt = """
-Create a photorealistic luxury Pakistani/South Asian model campaign image.
-Show elegant hands in a premium jewelry pose, but DO NOT include any jewelry or ring.
-Clean hands, neutral luxury background, soft studio lighting.
-Leave clear empty ring finger area for product overlay.
-No text, no logo.
-"""
-    elif product_type in ["necklace", "pendant", "set"]:
-        prompt = """
-Create a photorealistic Pakistani/South Asian female model portrait for a luxury jewelry campaign.
-Do NOT include any necklace, pendant, earrings, or jewelry.
-Elegant bridal/party styling, visible neck and upper chest area, soft studio lighting.
-Leave the neck area clean and empty for jewelry overlay.
-No text, no logo.
-"""
-    else:
-        prompt = """
-Create a photorealistic Pakistani/South Asian female model portrait for a luxury jewelry campaign.
-Do NOT include earrings, necklace, or any jewelry.
-Hair styled to reveal both ears clearly.
-Elegant bridal/party styling, soft studio lighting, clean luxury background.
-Leave both ears empty and visible for earring overlay.
-No text, no logo.
+    prompt = f"""
+Create a photorealistic luxury jewelry campaign portrait for Heritage Jewellers.
+
+Staff request:
+{text}
+
+Important:
+- Pakistani / South Asian female model.
+- Elegant bridal or party-wear styling.
+- Face visible, ears visible, neck visible.
+- Clean beauty lighting.
+- Warm luxury studio background.
+- NO earrings.
+- NO necklace.
+- NO ring.
+- NO jewelry at all.
+- Leave ears and neckline clean for product compositing.
+- Realistic human proportions.
+- High-end fashion campaign look.
+- No text.
+- No logo.
 """
 
     result = client.images.generate(
@@ -383,117 +384,143 @@ No text, no logo.
         quality="medium",
         n=1,
     )
-    image_bytes = base64.b64decode(result.data[0].b64_json)
-    return Image.open(BytesIO(image_bytes)).convert("RGBA")
+
+    image_base64 = result.data[0].b64_json
+    model_bytes = base64.b64decode(image_base64)
+    return Image.open(BytesIO(model_bytes)).convert("RGBA")
 
 
-def remove_bg_product(image_bytes):
-    """
-    Cut out product. If rembg fails, use simple white-background removal.
-    """
-    if remove is not None:
-        try:
-            cutout_bytes = remove(image_bytes)
-            return Image.open(BytesIO(cutout_bytes)).convert("RGBA")
-        except Exception as exc:
-            print("REMBG_ERROR", str(exc), flush=True)
-
-    img = Image.open(BytesIO(image_bytes)).convert("RGBA")
-    arr = np.array(img)
-    rgb = arr[:, :, :3]
-    # Remove near-white background.
-    white = (rgb[:, :, 0] > 225) & (rgb[:, :, 1] > 225) & (rgb[:, :, 2] > 225)
-    arr[:, :, 3][white] = 0
-    return Image.fromarray(arr)
+def detect_product_type(text):
+    lower = (text or "").lower()
+    if "ring" in lower:
+        return "ring"
+    if "necklace" in lower or "choker" in lower or "set" in lower:
+        return "necklace"
+    if "pendant" in lower:
+        return "pendant"
+    if "bracelet" in lower or "bangle" in lower:
+        return "bracelet"
+    # default for your current use case
+    return "earrings"
 
 
-def trim_transparent(img):
-    bbox = img.getbbox()
-    if bbox:
-        return img.crop(bbox)
-    return img
+def resize_product_for_model(product, product_type):
+    w, h = product.size
 
-
-def resize_keep_aspect(img, target_width=None, target_height=None):
-    w, h = img.size
-    if target_width:
-        ratio = target_width / float(w)
-    elif target_height:
-        ratio = target_height / float(h)
+    if product_type == "earrings":
+        target_w = 150
+    elif product_type == "ring":
+        target_w = 210
+    elif product_type == "necklace":
+        target_w = 420
+    elif product_type == "pendant":
+        target_w = 260
     else:
-        ratio = 1
-    return img.resize((max(1, int(w * ratio)), max(1, int(h * ratio))), Image.LANCZOS)
+        target_w = 250
+
+    scale = target_w / max(w, 1)
+    target_h = int(h * scale)
+    return product.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
 
-def composite_product_on_model(product_bytes, product_type):
-    model = generate_model_base(product_type)
-    product = remove_bg_product(product_bytes)
-    product = trim_transparent(product)
+def add_soft_shadow(layer):
+    alpha = layer.getchannel("A")
+    shadow = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    shadow.putalpha(alpha.filter(ImageFilter.GaussianBlur(4)))
+    return shadow
 
-    canvas = model.copy()
 
-    if product_type == "ring":
-        # Place on visible hand/finger area. This is approximate but preserves exact product.
-        p = resize_keep_aspect(product, target_width=170)
-        p = p.rotate(-8, expand=True, resample=Image.BICUBIC)
-        x, y = 560, 650
-        canvas.alpha_composite(p, (x, y))
+def composite_product_on_model(model_img, product_img, product_type):
+    """
+    Places exact cutout product on generated model. Placement is heuristic.
+    It preserves product pixels far better than AI redraw.
+    """
+    canvas = model_img.convert("RGBA").copy()
+    product = trim_transparent(product_img.convert("RGBA"))
+    product = resize_product_for_model(product, product_type)
 
-    elif product_type in ["necklace", "pendant"]:
-        p = resize_keep_aspect(product, target_width=420)
-        x = (1024 - p.size[0]) // 2
-        y = 485
-        canvas.alpha_composite(p, (x, y))
+    cw, ch = canvas.size
+    pw, ph = product.size
 
-    elif product_type in ["bracelet", "bangle"]:
-        p = resize_keep_aspect(product, target_width=260)
-        p = p.rotate(-12, expand=True, resample=Image.BICUBIC)
-        x, y = 560, 690
-        canvas.alpha_composite(p, (x, y))
+    # Slight enhancement so jewelry appears like campaign jewelry.
+    product = ImageEnhance.Sharpness(product).enhance(1.15)
+    product = ImageEnhance.Contrast(product).enhance(1.05)
+
+    if product_type == "earrings":
+        # If uploaded image has a pair of earrings, place the pair around both ears.
+        # Coordinates are portrait heuristics for 1024x1024 model.
+        x = int((cw - pw) / 2)
+        y = int(ch * 0.33)
+
+    elif product_type == "ring":
+        x = int(cw * 0.58)
+        y = int(ch * 0.70)
+
+    elif product_type == "necklace":
+        x = int((cw - pw) / 2)
+        y = int(ch * 0.58)
+
+    elif product_type == "pendant":
+        x = int((cw - pw) / 2)
+        y = int(ch * 0.55)
 
     else:
-        # Earrings/studs: overlay exact product on both ears.
-        earring = resize_keep_aspect(product, target_width=90)
-        left = earring
-        right = ImageOps.mirror(earring)
+        x = int((cw - pw) / 2)
+        y = int(ch * 0.50)
 
-        # Approximate ear positions on generated portrait.
-        canvas.alpha_composite(left, (318, 420))
-        canvas.alpha_composite(right, (615, 420))
+    shadow = add_soft_shadow(product)
+    shadow_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    shadow_layer.alpha_composite(shadow, (x + 4, y + 6))
+    canvas = Image.alpha_composite(canvas, shadow_layer)
 
-    final = canvas.convert("RGB")
-    final = ImageEnhance.Sharpness(final).enhance(1.08)
-    return pil_to_png_bytes(final)
+    product_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    product_layer.alpha_composite(product, (x, y))
+    canvas = Image.alpha_composite(canvas, product_layer)
+
+    return canvas
 
 
-# -------------------------
+def exact_model_composite(image_bytes, text):
+    product_type = detect_product_type(text)
+    product_cutout = remove_background_from_product(image_bytes)
+    model_img = generate_model_without_jewelry(text)
+    final_img = composite_product_on_model(model_img, product_cutout, product_type)
+    return pil_to_png_bytes(final_img)
+
+
+# ----------------------------
 # Background jobs
-# -------------------------
-
+# ----------------------------
 def background_image_job(sender, text, image_bytes, image_mime, message_id):
     try:
-        print("BACKGROUND_JOB_START", message_id, sender, text[:100], flush=True)
+        print("BACKGROUND_JOB_START", message_id, sender, text[:120], flush=True)
         lower = text.lower().strip()
 
         if lower.startswith("/stone"):
-            target = target_colour_from_text(text)
-            edited_bytes = exact_stone_colour_edit(image_bytes, target)
-            image_url = upload_image_to_cloudinary(edited_bytes)
-            send_whatsapp_image(
-                sender,
-                image_url,
-                f"Exact stone colour edit: {target}. Manager approval required before customer sharing.",
-            )
+            if ENABLE_EXACT_STONE_EDIT:
+                output_bytes = exact_stone_colour_change(image_bytes, text)
+                image_url = upload_image_to_cloudinary(output_bytes)
+
+                send_whatsapp_image(
+                    sender,
+                    image_url,
+                    "Exact stone-colour edit. Manager approval required before customer sharing.",
+                )
+            else:
+                send_whatsapp_text(sender, "Exact stone edit is disabled in Render environment.")
 
         elif lower.startswith("/model"):
-            product_type = detect_product_type(text, image_bytes, image_mime)
-            final_bytes = composite_product_on_model(image_bytes, product_type)
-            image_url = upload_image_to_cloudinary(final_bytes)
-            send_whatsapp_image(
-                sender,
-                image_url,
-                "Exact product composite on model. Manager approval required before customer sharing.",
-            )
+            if ENABLE_PRODUCT_COMPOSITING:
+                output_bytes = exact_model_composite(image_bytes, text)
+                image_url = upload_image_to_cloudinary(output_bytes)
+
+                send_whatsapp_image(
+                    sender,
+                    image_url,
+                    "Product compositing visualization. Manager approval required before customer sharing.",
+                )
+            else:
+                send_whatsapp_text(sender, "Product compositing is disabled in Render environment.")
 
         else:
             reply = call_openai(text, image_bytes, image_mime)
@@ -505,18 +532,20 @@ def background_image_job(sender, text, image_bytes, image_mime, message_id):
 
     except Exception as exc:
         print("BACKGROUND_JOB_ERROR", str(exc), flush=True)
-        send_whatsapp_text(sender, f"Sorry, Heritage AI had an image-processing error: {str(exc)[:500]}")
+        send_whatsapp_text(
+            sender,
+            f"Sorry, Heritage AI had an image-processing error: {str(exc)[:700]}"
+        )
     finally:
         PROCESSING_MESSAGE_IDS.discard(message_id)
 
 
-# -------------------------
-# Routes
-# -------------------------
-
+# ----------------------------
+# Flask routes
+# ----------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "Heritage WhatsApp AI Designer backend is running.", 200
+    return "Heritage WhatsApp AI Designer v4 backend is running.", 200
 
 
 @app.route("/webhook", methods=["GET"])
@@ -541,10 +570,12 @@ def receive_webhook():
         changes = entry.get("changes", [])[0]
         value = changes.get("value", {})
 
+        # Ignore delivery/read status webhooks.
         if "statuses" in value:
             return jsonify({"status": "status_update"}), 200
 
         messages = value.get("messages", [])
+
         if not messages:
             return jsonify({"status": "ignored"}), 200
 
@@ -566,14 +597,17 @@ def receive_webhook():
 
         if msg.get("type") == "text":
             text = msg.get("text", {}).get("body", "")
+
         elif msg.get("type") == "image":
             text = msg.get("image", {}).get("caption", "")
             media_id = msg.get("image", {}).get("id")
+
             if media_id:
                 media_url = get_media_url(media_id)
                 image_bytes, image_mime = download_media(media_url)
+
         else:
-            send_whatsapp_text(sender, "Please send a text command or image with caption. Example: /stone change emerald to ruby")
+            send_whatsapp_text(sender, "Please send a text command or image with caption. Example: /stone emerald to ruby")
             return jsonify({"status": "unsupported"}), 200
 
         if not text:
@@ -585,9 +619,15 @@ def receive_webhook():
             PROCESSING_MESSAGE_IDS.add(message_id)
 
             if lower.startswith("/stone"):
-                send_whatsapp_text(sender, "Editing stone colour on the exact uploaded product. Please wait...")
+                send_whatsapp_text(
+                    sender,
+                    "Creating exact stone-colour edit while preserving the original product. Please wait..."
+                )
             else:
-                send_whatsapp_text(sender, "Creating model composite using the exact uploaded product. Please wait...")
+                send_whatsapp_text(
+                    sender,
+                    "Creating model visualization using exact uploaded product overlay. Please wait..."
+                )
 
             thread = threading.Thread(
                 target=background_image_job,
@@ -612,7 +652,7 @@ def receive_webhook():
 
         try:
             sender = payload["entry"][0]["changes"][0]["value"]["messages"][0]["from"]
-            send_whatsapp_text(sender, f"Sorry, Heritage AI had an error: {str(exc)[:500]}")
+            send_whatsapp_text(sender, f"Sorry, Heritage AI had an error: {str(exc)[:700]}")
         except Exception:
             pass
 

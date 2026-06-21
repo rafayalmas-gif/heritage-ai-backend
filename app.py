@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import requests
+import threading
 from io import BytesIO
 from datetime import datetime, timezone
 
@@ -202,23 +203,6 @@ def edit_image_and_upload(image_bytes, prompt):
     return upload_generated_image_to_cloudinary(output_bytes)
 
 
-def generate_image_and_upload(prompt):
-    client = OpenAI(api_key=OPENAI_API_KEY)
-
-    result = client.images.generate(
-        model="gpt-image-1",
-        prompt=prompt,
-        size="1024x1024",
-        quality="medium",
-        n=1,
-    )
-
-    image_base64 = result.data[0].b64_json
-    output_bytes = base64.b64decode(image_base64)
-
-    return upload_generated_image_to_cloudinary(output_bytes)
-
-
 def build_model_image_prompt(analysis, staff_text):
     return f"""
 Use the uploaded jewelry image as the primary visual reference.
@@ -271,6 +255,47 @@ Critical requirements:
 """
 
 
+def background_image_job(sender, text, image_bytes, image_mime):
+    try:
+        print("BACKGROUND_JOB_START", sender, text[:100], flush=True)
+
+        analysis = call_openai(text, image_bytes, image_mime)
+        lower = text.lower().strip()
+
+        if lower.startswith("/model"):
+            image_prompt = build_model_image_prompt(analysis, text)
+            image_url = edit_image_and_upload(image_bytes, image_prompt)
+
+            send_whatsapp_image(
+                sender,
+                image_url,
+                "Heritage AI model visualization. Manager approval required before customer sharing.",
+            )
+
+        elif lower.startswith("/stone"):
+            image_prompt = build_stone_image_prompt(analysis, text)
+            image_url = edit_image_and_upload(image_bytes, image_prompt)
+
+            send_whatsapp_image(
+                sender,
+                image_url,
+                "Heritage AI stone-change concept. Manager approval required before customer sharing.",
+            )
+
+        else:
+            reply = analysis + "\n\nManager approval required before customer sharing."
+            send_whatsapp_text(sender, reply)
+
+        print("BACKGROUND_JOB_DONE", sender, flush=True)
+
+    except Exception as exc:
+        print("BACKGROUND_JOB_ERROR", str(exc), flush=True)
+        send_whatsapp_text(
+            sender,
+            f"Sorry, Heritage AI had an image-generation error: {str(exc)[:500]}"
+        )
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "Heritage WhatsApp AI Designer backend is running.", 200
@@ -297,11 +322,10 @@ def receive_webhook():
         entry = payload.get("entry", [])[0]
         changes = entry.get("changes", [])[0]
         value = changes.get("value", {})
-        
-        # Ignore WhatsApp delivery/status updates
+
         if "statuses" in value:
-        return jsonify({"status": "status_update"}), 200
-        
+            return jsonify({"status": "status_update"}), 200
+
         messages = value.get("messages", [])
 
         if not messages:
@@ -338,37 +362,38 @@ def receive_webhook():
 
         lower = text.lower().strip()
 
-        analysis = call_openai(text, image_bytes, image_mime)
-
         if lower.startswith("/model") and image_bytes:
-            send_whatsapp_text(sender, "Generating model visualization using your uploaded jewelry as reference. Please wait...")
-
-            image_prompt = build_model_image_prompt(analysis, text)
-            image_url = edit_image_and_upload(image_bytes, image_prompt)
-
-            send_whatsapp_image(
+            send_whatsapp_text(
                 sender,
-                image_url,
-                "Heritage AI model visualization. Manager approval required before customer sharing.",
+                "Generating model visualization using your uploaded jewelry as reference. Please wait..."
             )
 
-            return jsonify({"status": "model_image_sent"}), 200
+            thread = threading.Thread(
+                target=background_image_job,
+                args=(sender, text, image_bytes, image_mime),
+                daemon=True,
+            )
+            thread.start()
+
+            return jsonify({"status": "model_generation_started"}), 200
 
         if lower.startswith("/stone") and image_bytes:
-            send_whatsapp_text(sender, "Generating stone-change concept using your uploaded jewelry as reference. Please wait...")
-
-            image_prompt = build_stone_image_prompt(analysis, text)
-            image_url = edit_image_and_upload(image_bytes, image_prompt)
-
-            send_whatsapp_image(
+            send_whatsapp_text(
                 sender,
-                image_url,
-                "Heritage AI stone-change concept. Manager approval required before customer sharing.",
+                "Generating stone-change concept using your uploaded jewelry as reference. Please wait..."
             )
 
-            return jsonify({"status": "stone_image_sent"}), 200
+            thread = threading.Thread(
+                target=background_image_job,
+                args=(sender, text, image_bytes, image_mime),
+                daemon=True,
+            )
+            thread.start()
 
-        reply = analysis + "\n\nManager approval required before customer sharing."
+            return jsonify({"status": "stone_generation_started"}), 200
+
+        reply = call_openai(text, image_bytes, image_mime)
+        reply += "\n\nManager approval required before customer sharing."
         send_whatsapp_text(sender, reply)
 
         return jsonify({"status": "ok"}), 200

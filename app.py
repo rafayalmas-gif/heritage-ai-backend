@@ -1,4 +1,4 @@
-import os, json, base64, requests, threading
+import os, json, base64, requests, threading, math
 from io import BytesIO
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
@@ -112,112 +112,59 @@ def pil_to_png_bytes(img):
     return out.getvalue()
 
 
-# -------------------------
-# Safe jewelry stone editing
-# -------------------------
+# =========================
+# HERITAGE STONE EDIT ENGINE
+# =========================
 
 def target_hue(text):
     t = (text or "").lower()
     if "blue" in t or "sapphire" in t:
-        return 155
+        return 158
     if "green" in t or "emerald" in t:
-        return 85
+        return 88
     if "pink" in t or "morganite" in t:
-        return 235
+        return 232
     if "black" in t or "onyx" in t:
         return "black"
     if "white" in t or "pearl" in t:
         return "white"
-    return 0  # ruby/red
+    return 0
 
 
 def is_skin_pixel(r, g, b):
-    if r > 85 and g > 35 and b > 20 and r > g and g > b:
-        if (r - g) < 95 and (g - b) < 85:
+    if r > 80 and g > 35 and b > 20 and r > g and g >= b:
+        if (r - g) < 100 and (g - b) < 90:
             return True
     return False
 
 
+def is_white_background(r, g, b):
+    return r > 220 and g > 220 and b > 220
+
+
+def is_grey_background(r, g, b):
+    return abs(r - g) < 14 and abs(g - b) < 14 and r > 165
+
+
 def is_background_pixel(r, g, b):
-    if r > 220 and g > 220 and b > 220:
-        return True
-    if abs(r - g) < 12 and abs(g - b) < 12 and r > 175:
-        return True
-    return False
+    return is_white_background(r, g, b) or is_grey_background(r, g, b)
+
+
+def is_gold_pixel(r, g, b):
+    return r > 115 and g > 70 and b < 105 and r > b * 1.25 and g > b * 0.9
+
+
+def is_diamond_pixel(r, g, b):
+    mx = max(r, g, b)
+    mn = min(r, g, b)
+    return mx > 135 and (mx - mn) < 55
 
 
 def is_metal_or_diamond_pixel(r, g, b):
-    # White diamonds/silver
-    if abs(r - g) < 30 and abs(g - b) < 30 and max(r, g, b) > 135:
-        return True
-
-    # Gold metal
-    if r > 120 and g > 80 and b < 95 and r > b * 1.35:
-        return True
-
-    return False
+    return is_gold_pixel(r, g, b) or is_diamond_pixel(r, g, b)
 
 
-def jewelry_likelihood_pixel(r, g, b):
-    if is_skin_pixel(r, g, b):
-        return False
-    if is_background_pixel(r, g, b):
-        return False
-
-    bright = max(r, g, b)
-    dark = min(r, g, b)
-    chroma = bright - dark
-
-    # Jewelry has metal, diamond sparkle, colored stones, high contrast
-    if is_metal_or_diamond_pixel(r, g, b):
-        return True
-
-    if chroma > 45 and bright > 55:
-        return True
-
-    return False
-
-
-def find_jewelry_roi(rgb_img):
-    w, h = rgb_img.size
-    px = rgb_img.load()
-
-    xs, ys = [], []
-
-    step = 2 if max(w, h) > 900 else 1
-
-    for y in range(0, h, step):
-        for x in range(0, w, step):
-            r, g, b = px[x, y]
-            if jewelry_likelihood_pixel(r, g, b):
-                xs.append(x)
-                ys.append(y)
-
-    if not xs or not ys:
-        return (0, 0, w, h)
-
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-
-    pad_x = int((max_x - min_x) * 0.18) + 20
-    pad_y = int((max_y - min_y) * 0.18) + 20
-
-    min_x = max(0, min_x - pad_x)
-    max_x = min(w, max_x + pad_x)
-    min_y = max(0, min_y - pad_y)
-    max_y = min(h, max_y + pad_y)
-
-    return (min_x, min_y, max_x, max_y)
-
-
-def inside_roi(x, y, roi):
-    x1, y1, x2, y2 = roi
-    return x1 <= x <= x2 and y1 <= y <= y2
-
-
-def is_source_colored_stone(r, g, b, text):
-    lower = (text or "").lower()
-
+def is_probable_colored_stone(r, g, b, text):
     if is_skin_pixel(r, g, b):
         return False
     if is_background_pixel(r, g, b):
@@ -229,27 +176,193 @@ def is_source_colored_stone(r, g, b, text):
     mn = min(r, g, b)
     chroma = mx - mn
 
-    if chroma < 40 or mx < 45:
+    if chroma < 38 or mx < 45:
         return False
 
-    green_source = g > r * 0.72 and g > b * 1.05 and g > 55
-    red_source = r > g * 1.18 and r > b * 1.08 and r > 80 and g < 170
-    pink_source = r > 115 and b > 70 and r > g * 1.15 and b > g * 0.95
-    blue_source = b > r * 1.08 and b > g * 1.05 and b > 65
+    green = g > r * 0.70 and g > b * 1.00 and g > 50
+    red = r > g * 1.15 and r > b * 1.05 and r > 75 and g < 175
+    pink = r > 105 and b > 60 and r > g * 1.10 and b > g * 0.85
+    blue = b > r * 1.05 and b > g * 1.02 and b > 60
+
+    lower = (text or "").lower()
 
     if "ruby" in lower or "red" in lower:
-        return green_source or blue_source or pink_source
+        return green or blue or pink
 
     if "sapphire" in lower or "blue" in lower:
-        return green_source or red_source or pink_source
+        return green or red or pink
 
     if "emerald" in lower or "green" in lower:
-        return red_source or pink_source or blue_source
+        return red or pink or blue
 
     if "pink" in lower or "morganite" in lower:
-        return green_source or red_source or blue_source
+        return green or red or blue
 
-    return green_source or red_source or pink_source or blue_source
+    return green or red or pink or blue
+
+
+def build_candidate_mask(rgb, text):
+    w, h = rgb.size
+    px = rgb.load()
+    mask = [[False for _ in range(w)] for _ in range(h)]
+
+    for y in range(h):
+        for x in range(w):
+            r, g, b = px[x, y]
+            if is_probable_colored_stone(r, g, b, text):
+                mask[y][x] = True
+
+    return mask
+
+
+def connected_components(mask):
+    h = len(mask)
+    w = len(mask[0])
+    visited = [[False for _ in range(w)] for _ in range(h)]
+    comps = []
+
+    for y in range(h):
+        for x in range(w):
+            if not mask[y][x] or visited[y][x]:
+                continue
+
+            stack = [(x, y)]
+            visited[y][x] = True
+            pts = []
+
+            while stack:
+                cx, cy = stack.pop()
+                pts.append((cx, cy))
+
+                for nx, ny in ((cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)):
+                    if 0 <= nx < w and 0 <= ny < h:
+                        if mask[ny][nx] and not visited[ny][nx]:
+                            visited[ny][nx] = True
+                            stack.append((nx, ny))
+
+            comps.append(pts)
+
+    return comps
+
+
+def component_score(points, w, h):
+    area = len(points)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+
+    x1, x2 = min(xs), max(xs)
+    y1, y2 = min(ys), max(ys)
+
+    bw = max(1, x2 - x1 + 1)
+    bh = max(1, y2 - y1 + 1)
+
+    fill = area / float(bw * bh)
+    aspect = max(bw / bh, bh / bw)
+
+    touches_border = x1 <= 2 or y1 <= 2 or x2 >= w - 3 or y2 >= h - 3
+
+    if touches_border:
+        return 0
+
+    if area < 25:
+        return 0
+
+    if aspect > 6:
+        return 0
+
+    if fill < 0.08:
+        return 0
+
+    return area
+
+
+def refined_stone_mask(rgb, text):
+    w, h = rgb.size
+
+    max_side = max(w, h)
+
+    if max_side > 900:
+        scale = 900 / max_side
+        small = rgb.resize((int(w * scale), int(h * scale)))
+    else:
+        scale = 1.0
+        small = rgb
+
+    sw, sh = small.size
+
+    raw_mask = build_candidate_mask(small, text)
+    comps = connected_components(raw_mask)
+
+    scored = []
+    for c in comps:
+        score = component_score(c, sw, sh)
+        if score > 0:
+            scored.append((score, c))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    if not scored:
+        print("STONE_MASK_COMPONENTS 0", flush=True)
+        return [[False for _ in range(w)] for _ in range(h)]
+
+    # Keep strong stone regions only.
+    largest = scored[0][0]
+    keep = []
+
+    for score, comp in scored:
+        if score >= max(25, largest * 0.08):
+            keep.extend(comp)
+
+    small_mask_img = Image.new("L", (sw, sh), 0)
+    spx = small_mask_img.load()
+
+    for x, y in keep:
+        spx[x, y] = 255
+
+    # Smooth mask slightly.
+    small_mask_img = small_mask_img.filter(ImageFilter.MaxFilter(3))
+    small_mask_img = small_mask_img.filter(ImageFilter.MinFilter(3))
+    small_mask_img = small_mask_img.filter(ImageFilter.GaussianBlur(0.8))
+
+    if scale != 1.0:
+        mask_img = small_mask_img.resize((w, h))
+    else:
+        mask_img = small_mask_img
+
+    mask_px = mask_img.load()
+    final_mask = [[False for _ in range(w)] for _ in range(h)]
+
+    for y in range(h):
+        for x in range(w):
+            final_mask[y][x] = mask_px[x, y] > 80
+
+    print("STONE_MASK_COMPONENTS", len(scored), "KEPT_PIXELS", len(keep), flush=True)
+    return final_mask
+
+
+def recolor_hsv_pixel(h, s, v, target):
+    # Preserve gemstone depth, highlights, and shadows.
+    # Do not force full saturation; this avoids painted look.
+    if target == "black":
+        return h, int(s * 0.35), int(v * 0.28)
+
+    if target == "white":
+        return h, 18, min(255, int(v * 1.25))
+
+    new_h = target
+    new_s = min(255, max(70, int(s * 0.92)))
+    new_v = min(255, max(20, int(v * 1.00)))
+
+    # Preserve bright facet reflections.
+    if v > 210:
+        new_s = int(new_s * 0.55)
+
+    # Preserve deep gemstone shadow.
+    if v < 75:
+        new_s = int(new_s * 0.85)
+        new_v = int(v * 0.92)
+
+    return new_h, new_s, new_v
 
 
 def exact_stone_colour_change(image_bytes, text):
@@ -261,53 +374,42 @@ def exact_stone_colour_change(image_bytes, text):
 
     rgb = img.convert("RGB")
     hsv = rgb.convert("HSV")
-
-    w, h = rgb.size
-    roi = find_jewelry_roi(rgb)
-    print("JEWELRY_ROI", roi, flush=True)
-
-    rgb_pixels = list(rgb.getdata())
-    hsv_pixels = list(hsv.getdata())
     alpha = img.getchannel("A")
 
+    w, h = rgb.size
+
+    mask = refined_stone_mask(rgb, text)
+
+    hsv_pixels = list(hsv.getdata())
     target = target_hue(text)
+
     new_pixels = []
     changed = 0
 
-    for idx, ((r, g, b), (hh, s, v)) in enumerate(zip(rgb_pixels, hsv_pixels)):
+    for idx, (hh, s, v) in enumerate(hsv_pixels):
         x = idx % w
         y = idx // w
 
-        should_edit = (
-            inside_roi(x, y, roi)
-            and is_source_colored_stone(r, g, b, text)
-        )
-
-        if should_edit:
+        if mask[y][x]:
             changed += 1
-
-            if target == "black":
-                new_pixels.append((hh, int(s * 0.25), int(v * 0.22)))
-            elif target == "white":
-                new_pixels.append((hh, 18, min(255, int(v * 1.35))))
-            else:
-                new_pixels.append((target, min(255, int(s * 1.18)), min(255, int(v * 1.04))))
+            new_pixels.append(recolor_hsv_pixel(hh, s, v, target))
         else:
             new_pixels.append((hh, s, v))
 
-    print("STONE_PIXELS_CHANGED_JEWELRY_ONLY", changed, flush=True)
+    print("STONE_PIXELS_CHANGED_FINAL", changed, flush=True)
 
     hsv.putdata(new_pixels)
     result_rgb = hsv.convert("RGB")
     result = Image.merge("RGBA", (*result_rgb.split(), alpha))
+
     result = result.filter(ImageFilter.SHARPEN)
 
     return pil_to_png_bytes(result)
 
 
-# -------------------------
-# OpenAI text and image
-# -------------------------
+# =========================
+# OPENAI
+# =========================
 
 def openai_text(text, image_bytes=None, image_mime="image/jpeg"):
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -467,7 +569,7 @@ def receive_webhook():
             PROCESSING.add(message_id)
 
             if lower.startswith("/stone"):
-                wa_text(sender, "Editing only jewelry stones. Background, skin, dummy and clothing will be preserved. Please wait...")
+                wa_text(sender, "Editing only gemstone areas while preserving jewelry design, skin and background. Please wait...")
             else:
                 wa_text(sender, "Creating Heritage model visualization. Please wait...")
 

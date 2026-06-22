@@ -3,7 +3,7 @@ from io import BytesIO
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from openai import OpenAI
-from PIL import Image, ImageFilter
+from PIL import Image
 import cloudinary
 import cloudinary.uploader
 
@@ -28,22 +28,24 @@ cloudinary.config(
 PROCESSED = set()
 PROCESSING = set()
 
+COMMAND_HELP = """/stone ruby = change only mounted jewelry stones to deep ruby
+/stone emerald = change only mounted jewelry stones to deep emerald
+/stone sapphire = change only mounted jewelry stones to deep sapphire
+/model = show exact uploaded jewelry on South Asian model
+/polish yellow gold = change only metal polish
+/polish white gold = change only metal polish
+/polish rose gold = change only metal polish
+/caption = Instagram caption
+/product = website product description
+/cad = CAD/manufacturing brief"""
+
 HERITAGE_PROMPT = """
 You are Heritage Jewelry Design Director for Heritage Jewellers.
-Expert in Pakistani, South Asian, Mughal, bridal, kundan, meenakari,
-moissanite, lab diamond, emerald, ruby, sapphire and pearl jewelry.
+Expert in Pakistani, South Asian, Mughal-inspired, bridal, kundan, meenakari,
+gold, silver, moissanite, lab diamond, emerald, ruby, sapphire and pearl jewelry.
 Never create generic Western minimalist jewelry.
 Manager approval required before customer sharing.
 """
-
-COMMAND_HELP = """/stone = exact stone colour change
-/model = model visualization
-/dress = dress matching
-/collection = collection ideas
-/bridal = bridal version
-/caption = Instagram caption
-/product = website description
-/cad = CAD/manufacturing brief"""
 
 
 def log_event(data):
@@ -64,7 +66,7 @@ def wa_text(to, body):
         "text": {"preview_url": False, "body": body[:4096]},
     }
     r = requests.post(url, headers=headers, json=payload, timeout=30)
-    print("WA_TEXT_SEND", r.status_code, r.text[:400], flush=True)
+    print("WA_TEXT_SEND", r.status_code, r.text[:500], flush=True)
     return r
 
 
@@ -78,7 +80,7 @@ def wa_image(to, image_url, caption=""):
         "image": {"link": image_url, "caption": caption[:1024]},
     }
     r = requests.post(url, headers=headers, json=payload, timeout=30)
-    print("WA_IMAGE_SEND", r.status_code, r.text[:400], flush=True)
+    print("WA_IMAGE_SEND", r.status_code, r.text[:500], flush=True)
     return r
 
 
@@ -106,348 +108,151 @@ def upload_cloudinary(image_bytes):
     return result["secure_url"]
 
 
-def pil_to_png_bytes(img):
-    out = BytesIO()
-    img.save(out, format="PNG")
-    return out.getvalue()
-
-
-# =========================
-# HERITAGE STONE EDIT ENGINE
-# =========================
-
-def target_hue(text):
-    t = (text or "").lower()
-    if "blue" in t or "sapphire" in t:
-        return 160
-    if "green" in t or "emerald" in t:
-        return 88
-    if "pink" in t or "morganite" in t:
-        return 232
-    if "black" in t or "onyx" in t:
-        return "black"
-    if "white" in t or "pearl" in t:
-        return "white"
-    return 0
-
-
-def is_skin_pixel(r, g, b):
-    if r > 75 and g > 35 and b > 20 and r > g and g >= b:
-        if (r - g) < 105 and (g - b) < 95:
-            return True
-    return False
-
-
-def is_background_pixel(r, g, b):
-    if r > 220 and g > 220 and b > 220:
-        return True
-    if abs(r - g) < 14 and abs(g - b) < 14 and r > 165:
-        return True
-    return False
-
-
-def is_gold_pixel(r, g, b):
-    return r > 115 and g > 70 and b < 110 and r > b * 1.25
-
-
-def is_diamond_pixel(r, g, b):
-    mx = max(r, g, b)
-    mn = min(r, g, b)
-    return mx > 135 and (mx - mn) < 60
-
-
-def is_jewelry_support_pixel(r, g, b):
-    if is_skin_pixel(r, g, b):
-        return False
-    if is_background_pixel(r, g, b):
-        return False
-    return is_gold_pixel(r, g, b) or is_diamond_pixel(r, g, b)
-
-
-def is_probable_colored_stone(r, g, b, text):
-    if is_skin_pixel(r, g, b):
-        return False
-    if is_background_pixel(r, g, b):
-        return False
-    if is_jewelry_support_pixel(r, g, b):
-        return False
-
-    mx = max(r, g, b)
-    mn = min(r, g, b)
-    chroma = mx - mn
-
-    if chroma < 28 or mx < 32:
-        return False
-
-    green = g > r * 0.62 and g > b * 0.90 and g > 38
-    red = r > g * 1.08 and r > b * 1.02 and r > 55 and g < 180
-    pink = r > 85 and b > 45 and r > g * 1.05 and b > g * 0.70
-    blue = b > r * 0.98 and b > g * 0.95 and b > 45
-
-    lower = (text or "").lower()
-
-    if "ruby" in lower or "red" in lower:
-        return green or blue or pink
-
-    if "sapphire" in lower or "blue" in lower:
-        return green or red or pink
-
-    if "emerald" in lower or "green" in lower:
-        return red or pink or blue
-
-    if "pink" in lower or "morganite" in lower:
-        return green or red or blue
-
-    return green or red or pink or blue
-
-
-def build_candidate_mask(rgb, text):
-    w, h = rgb.size
-    px = rgb.load()
-    mask = [[False for _ in range(w)] for _ in range(h)]
-
-    for y in range(h):
-        for x in range(w):
-            r, g, b = px[x, y]
-            if is_probable_colored_stone(r, g, b, text):
-                mask[y][x] = True
-
-    return mask
-
-
-def connected_components(mask):
-    h = len(mask)
-    w = len(mask[0])
-    visited = [[False for _ in range(w)] for _ in range(h)]
-    comps = []
-
-    for y in range(h):
-        for x in range(w):
-            if not mask[y][x] or visited[y][x]:
-                continue
-
-            stack = [(x, y)]
-            visited[y][x] = True
-            pts = []
-
-            while stack:
-                cx, cy = stack.pop()
-                pts.append((cx, cy))
-
-                for nx, ny in ((cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)):
-                    if 0 <= nx < w and 0 <= ny < h:
-                        if mask[ny][nx] and not visited[ny][nx]:
-                            visited[ny][nx] = True
-                            stack.append((nx, ny))
-
-            comps.append(pts)
-
-    return comps
-
-
-def jewelry_support_score(points, rgb):
-    w, h = rgb.size
-    px = rgb.load()
-
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-
-    x1, x2 = min(xs), max(xs)
-    y1, y2 = min(ys), max(ys)
-
-    pad = 16
-    sx1 = max(0, x1 - pad)
-    sy1 = max(0, y1 - pad)
-    sx2 = min(w - 1, x2 + pad)
-    sy2 = min(h - 1, y2 + pad)
-
-    support = 0
-    total = 0
-
-    step = 2
-    for y in range(sy1, sy2 + 1, step):
-        for x in range(sx1, sx2 + 1, step):
-            total += 1
-            r, g, b = px[x, y]
-            if is_jewelry_support_pixel(r, g, b):
-                support += 1
-
-    if total == 0:
-        return 0
-
-    return support / total
-
-
-def component_score(points, rgb):
-    w, h = rgb.size
-    area = len(points)
-
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-
-    x1, x2 = min(xs), max(xs)
-    y1, y2 = min(ys), max(ys)
-
-    bw = max(1, x2 - x1 + 1)
-    bh = max(1, y2 - y1 + 1)
-
-    fill = area / float(bw * bh)
-    aspect = max(bw / bh, bh / bw)
-
-    touches_border = x1 <= 2 or y1 <= 2 or x2 >= w - 3 or y2 >= h - 3
-
-    if touches_border:
-        return 0
-
-    if area < 18:
-        return 0
-
-    if aspect > 7:
-        return 0
-
-    if fill < 0.055:
-        return 0
-
-    support = jewelry_support_score(points, rgb)
-
-    # This is the important fix:
-    # Chair/background colour will not have diamond/gold support nearby.
-    if support < 0.035:
-        return 0
-
-    return area * (1 + support * 8)
-
-
-def refined_stone_mask(rgb, text):
-    w, h = rgb.size
-
-    max_side = max(w, h)
-    if max_side > 900:
-        scale = 900 / max_side
-        small = rgb.resize((int(w * scale), int(h * scale)))
-    else:
-        scale = 1.0
-        small = rgb
-
-    sw, sh = small.size
-    raw_mask = build_candidate_mask(small, text)
-    comps = connected_components(raw_mask)
-
-    scored = []
-    for c in comps:
-        score = component_score(c, small)
-        if score > 0:
-            scored.append((score, c))
-
-    scored.sort(reverse=True, key=lambda x: x[0])
-
-    if not scored:
-        print("STONE_MASK_COMPONENTS 0", flush=True)
-        return [[False for _ in range(w)] for _ in range(h)]
-
-    largest = scored[0][0]
-    keep = []
-
-    for score, comp in scored:
-        if score >= max(18, largest * 0.045):
-            keep.extend(comp)
-
-    small_mask_img = Image.new("L", (sw, sh), 0)
-    spx = small_mask_img.load()
-
-    for x, y in keep:
-        spx[x, y] = 255
-
-    small_mask_img = small_mask_img.filter(ImageFilter.MaxFilter(3))
-    small_mask_img = small_mask_img.filter(ImageFilter.MinFilter(3))
-    small_mask_img = small_mask_img.filter(ImageFilter.GaussianBlur(0.55))
-
-    if scale != 1.0:
-        mask_img = small_mask_img.resize((w, h))
-    else:
-        mask_img = small_mask_img
-
-    mask_px = mask_img.load()
-    final_mask = [[False for _ in range(w)] for _ in range(h)]
-
-    for y in range(h):
-        for x in range(w):
-            final_mask[y][x] = mask_px[x, y] > 85
-
-    print("STONE_MASK_COMPONENTS", len(scored), "KEPT_PIXELS", len(keep), flush=True)
-    return final_mask
-
-
-def recolor_hsv_pixel(h, s, v, target):
-    # Darker luxury Heritage colors, while preserving facets.
-    if target == "black":
-        return h, int(s * 0.35), int(v * 0.22)
-
-    if target == "white":
-        return h, 15, min(255, int(v * 1.18))
-
-    new_h = target
-
-    # Darker gemstone color.
-    new_s = min(255, max(95, int(s * 1.08)))
-    new_v = min(235, max(18, int(v * 0.82)))
-
-    # Preserve highlights / facets.
-    if v > 205:
-        new_s = int(new_s * 0.45)
-        new_v = min(245, int(v * 0.96))
-
-    # Preserve deep internal shadow.
-    if v < 70:
-        new_s = int(new_s * 0.95)
-        new_v = int(v * 0.72)
-
-    return new_h, new_s, new_v
-
-
-def exact_stone_colour_change(image_bytes, text):
+def prepare_image_file(image_bytes):
     img = Image.open(BytesIO(image_bytes)).convert("RGBA")
-
-    max_side = 1400
+    max_side = 1600
     if max(img.size) > max_side:
         img.thumbnail((max_side, max_side))
 
-    rgb = img.convert("RGB")
-    hsv = rgb.convert("HSV")
-    alpha = img.getchannel("A")
-
-    w, h = rgb.size
-    mask = refined_stone_mask(rgb, text)
-
-    hsv_pixels = list(hsv.getdata())
-    target = target_hue(text)
-
-    new_pixels = []
-    changed = 0
-
-    for idx, (hh, s, v) in enumerate(hsv_pixels):
-        x = idx % w
-        y = idx // w
-
-        if mask[y][x]:
-            changed += 1
-            new_pixels.append(recolor_hsv_pixel(hh, s, v, target))
-        else:
-            new_pixels.append((hh, s, v))
-
-    print("STONE_PIXELS_CHANGED_DARK_LUXURY", changed, flush=True)
-
-    hsv.putdata(new_pixels)
-    result_rgb = hsv.convert("RGB")
-    result = Image.merge("RGBA", (*result_rgb.split(), alpha))
-    result = result.filter(ImageFilter.SHARPEN)
-
-    return pil_to_png_bytes(result)
+    out = BytesIO()
+    img.save(out, format="PNG")
+    out.seek(0)
+    out.name = "heritage_input.png"
+    return out
 
 
-# =========================
-# OPENAI
-# =========================
+def requested_stone(text):
+    t = (text or "").lower()
+    if "sapphire" in t or "blue" in t:
+        return "royal deep Kashmir sapphire blue"
+    if "emerald" in t or "green" in t:
+        return "deep Colombian emerald green"
+    if "ruby" in t or "red" in t:
+        return "deep pigeon-blood ruby red"
+    if "pink" in t or "morganite" in t:
+        return "soft luxury pink morganite"
+    if "black" in t or "onyx" in t:
+        return "deep black onyx"
+    return "deep pigeon-blood ruby red"
+
+
+def requested_polish(text):
+    t = (text or "").lower()
+    if "white" in t:
+        return "white gold polish"
+    if "rose" in t:
+        return "rose gold polish"
+    if "silver" in t:
+        return "silver polish"
+    if "yellow" in t or "gold" in t:
+        return "yellow gold polish"
+    return "yellow gold polish"
+
+
+def image_edit(image_bytes, prompt):
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    image_file = prepare_image_file(image_bytes)
+
+    result = client.images.edit(
+        model=OPENAI_IMAGE_MODEL,
+        image=image_file,
+        prompt=prompt,
+        size="1024x1024",
+        n=1,
+    )
+
+    return base64.b64decode(result.data[0].b64_json)
+
+
+def stone_edit_ai(image_bytes, text):
+    stone = requested_stone(text)
+
+    prompt = f"""
+Edit the uploaded jewelry photo for Heritage Jewellers.
+
+Task:
+Change ONLY the gemstones that are physically mounted inside the MAIN jewelry piece to {stone}.
+
+Very important:
+- First identify the MAIN jewelry item or jewelry set.
+- Edit ONLY stones mounted inside that jewelry.
+- Do NOT edit loose stones lying in the background.
+- Do NOT edit decorative stones, chairs, showcase, dummy, tray, labels, tags, box, cloth, skin, hand, ear, neck, hair, model, floor or wall.
+- Do NOT change diamonds.
+- Do NOT change pearls.
+- Do NOT change metal.
+- Do NOT change jewelry design.
+- Do NOT change stone count.
+- Do NOT change stone shape.
+- Do NOT change prongs.
+- Do NOT change size, placement, angle, background, lighting or camera perspective.
+
+Gemstone realism:
+- Use dark luxury gemstone colour.
+- Preserve original stone cut, facets, transparency, shine, reflection, highlights, shadows and depth.
+- Result must look like a real gemstone, not painted colour.
+
+Return only the edited image.
+"""
+
+    return image_edit(image_bytes, prompt)
+
+
+def polish_edit_ai(image_bytes, text):
+    polish = requested_polish(text)
+
+    prompt = f"""
+Edit the uploaded jewelry photo for Heritage Jewellers.
+
+Task:
+Change ONLY the jewelry metal polish to {polish}.
+
+Very important:
+- Edit only metal areas.
+- Do NOT edit gemstones.
+- Do NOT edit diamonds.
+- Do NOT edit pearls.
+- Do NOT edit skin, hand, ear, neck, hair, model, box, tray, tags, chair, showcase, cloth, wall or background.
+- Do NOT change jewelry design, stone shape, stone count, size, placement or camera angle.
+- Preserve original reflections, shine, shadows and luxury finish.
+
+Return only the edited image.
+"""
+
+    return image_edit(image_bytes, prompt)
+
+
+def model_edit_ai(image_bytes, text):
+    prompt = f"""
+Create a luxury Heritage Jewellers model visualization.
+
+Use the uploaded jewelry as the exact reference.
+
+Very important:
+- Show the EXACT uploaded jewelry product on a Pakistani / South Asian model.
+- Do NOT redesign the jewelry.
+- Do NOT change stone colour.
+- Do NOT change metal colour.
+- Do NOT change stone count.
+- Do NOT change stone shape.
+- Do NOT change diamond layout.
+- Do NOT change prongs, size, proportions or design language.
+- Jewelry must remain the hero.
+- If uploaded product is earrings, place on ears.
+- If uploaded product is ring, place on hand.
+- If uploaded product is necklace or pendant, place on neck.
+- Luxury bridal / party wear South Asian styling.
+- Photorealistic campaign image.
+- No text, no logo, no watermark.
+
+Staff request:
+{text}
+
+Return only the model visualization image.
+"""
+
+    return image_edit(image_bytes, prompt)
+
 
 def openai_text(text, image_bytes=None, image_mime="image/jpeg"):
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -472,52 +277,23 @@ def openai_text(text, image_bytes=None, image_mime="image/jpeg"):
     return response.output_text
 
 
-def model_visualization(image_bytes, image_mime, text):
-    client = OpenAI(api_key=OPENAI_API_KEY)
-
-    img_file = BytesIO(image_bytes)
-    img_file.name = "heritage_product.png"
-
-    prompt = f"""
-Create a photorealistic Pakistani / South Asian model visualization for Heritage Jewellers.
-
-Use uploaded jewelry image as the main product reference.
-
-Important:
-- Keep jewelry style close to uploaded product.
-- Keep stone colour.
-- Keep metal colour.
-- Jewelry must remain hero.
-- Luxury bridal / party-wear styling.
-- No text, no logo.
-
-Staff request:
-{text}
-"""
-
-    result = client.images.edit(
-        model=OPENAI_IMAGE_MODEL,
-        image=img_file,
-        prompt=prompt,
-        size="1024x1024",
-        n=1,
-    )
-
-    return base64.b64decode(result.data[0].b64_json)
-
-
 def background_job(sender, text, image_bytes, image_mime, message_id):
     try:
         print("BACKGROUND_JOB_START", message_id, sender, text[:100], flush=True)
         lower = text.lower().strip()
 
         if lower.startswith("/stone"):
-            output = exact_stone_colour_change(image_bytes, text)
+            output = stone_edit_ai(image_bytes, text)
             url = upload_cloudinary(output)
-            wa_image(sender, url, "Exact jewelry-stone colour edit. Manager approval required before customer sharing.")
+            wa_image(sender, url, "Stone colour edit. Manager approval required before customer sharing.")
+
+        elif lower.startswith("/polish"):
+            output = polish_edit_ai(image_bytes, text)
+            url = upload_cloudinary(output)
+            wa_image(sender, url, "Metal polish edit. Manager approval required before customer sharing.")
 
         elif lower.startswith("/model"):
-            output = model_visualization(image_bytes, image_mime, text)
+            output = model_edit_ai(image_bytes, text)
             url = upload_cloudinary(output)
             wa_image(sender, url, "Heritage model visualization. Manager approval required before customer sharing.")
 
@@ -590,6 +366,7 @@ def receive_webhook():
         elif msg.get("type") == "image":
             text = msg.get("image", {}).get("caption", "")
             media_id = msg.get("image", {}).get("id")
+
             if media_id:
                 media_url = get_media_url(media_id)
                 image_bytes, image_mime = download_media(media_url)
@@ -603,13 +380,21 @@ def receive_webhook():
 
         lower = text.lower().strip()
 
-        if image_bytes and (lower.startswith("/stone") or lower.startswith("/model")):
+        image_commands = (
+            lower.startswith("/stone")
+            or lower.startswith("/model")
+            or lower.startswith("/polish")
+        )
+
+        if image_bytes and image_commands:
             PROCESSING.add(message_id)
 
             if lower.startswith("/stone"):
-                wa_text(sender, "Editing only gemstone areas. Background, chair, skin, hand and shop display will be preserved. Please wait...")
+                wa_text(sender, "Editing only mounted gemstones inside the main jewelry piece. Please wait...")
+            elif lower.startswith("/polish"):
+                wa_text(sender, "Changing only metal polish while preserving stones and design. Please wait...")
             else:
-                wa_text(sender, "Creating Heritage model visualization. Please wait...")
+                wa_text(sender, "Creating Heritage model visualization using uploaded jewelry reference. Please wait...")
 
             thread = threading.Thread(
                 target=background_job,

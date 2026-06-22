@@ -3,7 +3,7 @@ from io import BytesIO
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from openai import OpenAI
-from PIL import Image
+from PIL import Image, ImageFilter
 import cloudinary
 import cloudinary.uploader
 
@@ -30,10 +30,9 @@ PROCESSING = set()
 
 HERITAGE_PROMPT = """
 You are Heritage Jewelry Design Director for Heritage Jewellers.
-You are expert in Pakistani, South Asian, Mughal, bridal, kundan, meenakari,
+Expert in Pakistani, South Asian, Mughal, bridal, kundan, meenakari,
 moissanite, lab diamond, emerald, ruby, sapphire and pearl jewelry.
 Never create generic Western minimalist jewelry.
-Always keep Heritage DNA, commercial appeal and manufacturability.
 Manager approval required before customer sharing.
 """
 
@@ -113,25 +112,149 @@ def pil_to_png_bytes(img):
     return out.getvalue()
 
 
+# -------------------------
+# Safe jewelry stone editing
+# -------------------------
+
 def target_hue(text):
     t = (text or "").lower()
     if "blue" in t or "sapphire" in t:
         return 155
     if "green" in t or "emerald" in t:
         return 85
-    if "pink" in t:
+    if "pink" in t or "morganite" in t:
         return 235
     if "black" in t or "onyx" in t:
         return "black"
     if "white" in t or "pearl" in t:
         return "white"
-    return 0
+    return 0  # ruby/red
+
+
+def is_skin_pixel(r, g, b):
+    if r > 85 and g > 35 and b > 20 and r > g and g > b:
+        if (r - g) < 95 and (g - b) < 85:
+            return True
+    return False
+
+
+def is_background_pixel(r, g, b):
+    if r > 220 and g > 220 and b > 220:
+        return True
+    if abs(r - g) < 12 and abs(g - b) < 12 and r > 175:
+        return True
+    return False
+
+
+def is_metal_or_diamond_pixel(r, g, b):
+    # White diamonds/silver
+    if abs(r - g) < 30 and abs(g - b) < 30 and max(r, g, b) > 135:
+        return True
+
+    # Gold metal
+    if r > 120 and g > 80 and b < 95 and r > b * 1.35:
+        return True
+
+    return False
+
+
+def jewelry_likelihood_pixel(r, g, b):
+    if is_skin_pixel(r, g, b):
+        return False
+    if is_background_pixel(r, g, b):
+        return False
+
+    bright = max(r, g, b)
+    dark = min(r, g, b)
+    chroma = bright - dark
+
+    # Jewelry has metal, diamond sparkle, colored stones, high contrast
+    if is_metal_or_diamond_pixel(r, g, b):
+        return True
+
+    if chroma > 45 and bright > 55:
+        return True
+
+    return False
+
+
+def find_jewelry_roi(rgb_img):
+    w, h = rgb_img.size
+    px = rgb_img.load()
+
+    xs, ys = [], []
+
+    step = 2 if max(w, h) > 900 else 1
+
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            r, g, b = px[x, y]
+            if jewelry_likelihood_pixel(r, g, b):
+                xs.append(x)
+                ys.append(y)
+
+    if not xs or not ys:
+        return (0, 0, w, h)
+
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+
+    pad_x = int((max_x - min_x) * 0.18) + 20
+    pad_y = int((max_y - min_y) * 0.18) + 20
+
+    min_x = max(0, min_x - pad_x)
+    max_x = min(w, max_x + pad_x)
+    min_y = max(0, min_y - pad_y)
+    max_y = min(h, max_y + pad_y)
+
+    return (min_x, min_y, max_x, max_y)
+
+
+def inside_roi(x, y, roi):
+    x1, y1, x2, y2 = roi
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+
+def is_source_colored_stone(r, g, b, text):
+    lower = (text or "").lower()
+
+    if is_skin_pixel(r, g, b):
+        return False
+    if is_background_pixel(r, g, b):
+        return False
+    if is_metal_or_diamond_pixel(r, g, b):
+        return False
+
+    mx = max(r, g, b)
+    mn = min(r, g, b)
+    chroma = mx - mn
+
+    if chroma < 40 or mx < 45:
+        return False
+
+    green_source = g > r * 0.72 and g > b * 1.05 and g > 55
+    red_source = r > g * 1.18 and r > b * 1.08 and r > 80 and g < 170
+    pink_source = r > 115 and b > 70 and r > g * 1.15 and b > g * 0.95
+    blue_source = b > r * 1.08 and b > g * 1.05 and b > 65
+
+    if "ruby" in lower or "red" in lower:
+        return green_source or blue_source or pink_source
+
+    if "sapphire" in lower or "blue" in lower:
+        return green_source or red_source or pink_source
+
+    if "emerald" in lower or "green" in lower:
+        return red_source or pink_source or blue_source
+
+    if "pink" in lower or "morganite" in lower:
+        return green_source or red_source or blue_source
+
+    return green_source or red_source or pink_source or blue_source
 
 
 def exact_stone_colour_change(image_bytes, text):
     img = Image.open(BytesIO(image_bytes)).convert("RGBA")
 
-    # Resize only if huge, to prevent Render memory crash.
     max_side = 1400
     if max(img.size) > max_side:
         img.thumbnail((max_side, max_side))
@@ -139,45 +262,52 @@ def exact_stone_colour_change(image_bytes, text):
     rgb = img.convert("RGB")
     hsv = rgb.convert("HSV")
 
+    w, h = rgb.size
+    roi = find_jewelry_roi(rgb)
+    print("JEWELRY_ROI", roi, flush=True)
+
+    rgb_pixels = list(rgb.getdata())
     hsv_pixels = list(hsv.getdata())
     alpha = img.getchannel("A")
+
     target = target_hue(text)
-
     new_pixels = []
-
     changed = 0
 
-    for h, s, v in hsv_pixels:
-        # Detect emerald/green stones by default.
-        is_green = 55 <= h <= 115 and s > 45 and v > 35
+    for idx, ((r, g, b), (hh, s, v)) in enumerate(zip(rgb_pixels, hsv_pixels)):
+        x = idx % w
+        y = idx // w
 
-        # Also detect blue stones if command says blue to another colour later.
-        is_blue = 130 <= h <= 175 and s > 45 and v > 35
-
-        # Detect ruby/red stones if command says ruby/red to another colour.
-        is_red = (h <= 12 or h >= 240) and s > 45 and v > 35
-
-        should_edit = is_green or is_blue or is_red
+        should_edit = (
+            inside_roi(x, y, roi)
+            and is_source_colored_stone(r, g, b, text)
+        )
 
         if should_edit:
             changed += 1
-            if target == "black":
-                new_pixels.append((h, int(s * 0.3), int(v * 0.25)))
-            elif target == "white":
-                new_pixels.append((h, 20, min(255, int(v * 1.4))))
-            else:
-                new_pixels.append((target, min(255, int(s * 1.25)), min(255, int(v * 1.05))))
-        else:
-            new_pixels.append((h, s, v))
 
-    print("STONE_PIXELS_CHANGED", changed, flush=True)
+            if target == "black":
+                new_pixels.append((hh, int(s * 0.25), int(v * 0.22)))
+            elif target == "white":
+                new_pixels.append((hh, 18, min(255, int(v * 1.35))))
+            else:
+                new_pixels.append((target, min(255, int(s * 1.18)), min(255, int(v * 1.04))))
+        else:
+            new_pixels.append((hh, s, v))
+
+    print("STONE_PIXELS_CHANGED_JEWELRY_ONLY", changed, flush=True)
 
     hsv.putdata(new_pixels)
     result_rgb = hsv.convert("RGB")
     result = Image.merge("RGBA", (*result_rgb.split(), alpha))
+    result = result.filter(ImageFilter.SHARPEN)
 
     return pil_to_png_bytes(result)
 
+
+# -------------------------
+# OpenAI text and image
+# -------------------------
 
 def openai_text(text, image_bytes=None, image_mime="image/jpeg"):
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -211,17 +341,14 @@ def model_visualization(image_bytes, image_mime, text):
     prompt = f"""
 Create a photorealistic Pakistani / South Asian model visualization for Heritage Jewellers.
 
-Use the uploaded jewelry image as the main product reference.
+Use uploaded jewelry image as the main product reference.
 
 Important:
-- Keep the uploaded jewelry style as close as possible.
+- Keep jewelry style close to uploaded product.
 - Keep stone colour.
 - Keep metal colour.
-- Keep product category.
-- Do not create Western minimalist jewelry.
-- Jewelry must remain the hero.
-- Luxury bridal / party wear styling.
-- Warm premium studio lighting.
+- Jewelry must remain hero.
+- Luxury bridal / party-wear styling.
 - No text, no logo.
 
 Staff request:
@@ -236,8 +363,7 @@ Staff request:
         n=1,
     )
 
-    b64 = result.data[0].b64_json
-    return base64.b64decode(b64)
+    return base64.b64decode(result.data[0].b64_json)
 
 
 def background_job(sender, text, image_bytes, image_mime, message_id):
@@ -248,7 +374,7 @@ def background_job(sender, text, image_bytes, image_mime, message_id):
         if lower.startswith("/stone"):
             output = exact_stone_colour_change(image_bytes, text)
             url = upload_cloudinary(output)
-            wa_image(sender, url, "Exact stone-colour edit. Manager approval required before customer sharing.")
+            wa_image(sender, url, "Exact jewelry-stone colour edit. Manager approval required before customer sharing.")
 
         elif lower.startswith("/model"):
             output = model_visualization(image_bytes, image_mime, text)
@@ -341,7 +467,7 @@ def receive_webhook():
             PROCESSING.add(message_id)
 
             if lower.startswith("/stone"):
-                wa_text(sender, "Editing stone colour on the exact uploaded product. Please wait...")
+                wa_text(sender, "Editing only jewelry stones. Background, skin, dummy and clothing will be preserved. Please wait...")
             else:
                 wa_text(sender, "Creating Heritage model visualization. Please wait...")
 

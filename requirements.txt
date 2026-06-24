@@ -4,3 +4,4 @@ requests
 openai
 cloudinary
 pillow
+beautifulsoup4

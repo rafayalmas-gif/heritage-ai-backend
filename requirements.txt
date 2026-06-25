@@ -1,0 +1,8 @@
+flask
+gunicorn
+requests
+openai
+pillow
+cloudinary
+beautifulsoup4
+lxml

@@ -2,6 +2,7 @@ flask
 gunicorn
 requests
 openai
-cloudinary
 pillow
+cloudinary
 beautifulsoup4
+lxml

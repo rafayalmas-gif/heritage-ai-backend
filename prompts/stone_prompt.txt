@@ -1,0 +1,16 @@
+STONE EDIT RULES
+
+If mixed stone zones exist, ask first:
+1. Main / large center stones only
+2. Side stones only
+3. All colored stones
+4. Drops / hanging stones
+5. Pearls only
+6. Custom
+
+Preserve:
+stone shape, stone size, stone count, prongs, setting, bezels, white zircon/diamond halos, metal polish, motif and background.
+
+Do not enlarge stones.
+Do not thicken prongs.
+Do not redesign side patterns.

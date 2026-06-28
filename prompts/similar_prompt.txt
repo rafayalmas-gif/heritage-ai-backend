@@ -1,0 +1,19 @@
+SIMILAR SEARCH RULES
+
+Similarity is based on product DNA, not title, not code, and not stone color alone.
+
+Priority:
+1. Exact requested category
+2. Same pattern/motif/kaam
+3. Same construction
+4. Same polish
+5. Same thickness/weight
+6. Same stone layout
+7. Stone color last
+
+If user asks /similar necklace sets, search only necklace sets.
+If user asks /similar bangle, search bangles/bracelets only.
+Do not mix pendant sets into necklace sets unless requested.
+
+Return product image, code, price, similarity and product link.
+Never only return "Reply /more".

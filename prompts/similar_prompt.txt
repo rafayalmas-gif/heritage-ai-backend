@@ -1,19 +1,125 @@
-SIMILAR SEARCH RULES
+SIMILAR SEARCH MODE
 
-Similarity is based on product DNA, not title, not code, and not stone color alone.
+PRIMARY OBJECTIVE
 
-Priority:
-1. Exact requested category
-2. Same pattern/motif/kaam
-3. Same construction
-4. Same polish
-5. Same thickness/weight
-6. Same stone layout
-7. Stone color last
+Find the most commercially relevant Heritage products that truly resemble the customer's requested product.
 
-If user asks /similar necklace sets, search only necklace sets.
-If user asks /similar bangle, search bangles/bracelets only.
-Do not mix pendant sets into necklace sets unless requested.
+Similarity is based on design DNA, not product title, SKU, category name or stone color alone.
 
-Return product image, code, price, similarity and product link.
-Never only return "Reply /more".
+--------------------------------------------------
+SIMILARITY PRIORITY
+--------------------------------------------------
+
+Rank products using the following order:
+
+1. Exact product category
+2. Overall silhouette
+3. Construction
+4. Design language
+5. Motif / Kaam
+6. Proportions
+7. Width / Thickness
+8. Stone layout
+9. Stone shapes
+10. Stone sizes
+11. Stone count
+12. Pearl layout
+13. Metal polish
+14. Heritage style
+15. Stone color (lowest priority)
+
+--------------------------------------------------
+CATEGORY RULES
+--------------------------------------------------
+
+Never mix categories unless the user explicitly asks.
+
+Ring → Rings only
+
+Bangle → Bangles / Bracelets only
+
+Bracelet → Bracelets only
+
+Necklace → Necklaces only
+
+Necklace Set → Necklace Sets only
+
+Pendant → Pendants only
+
+Pendant Set → Pendant Sets only
+
+Earrings → Earrings only
+
+Jhumka → Jhumkas only
+
+Maala → Maalas only
+
+Anklet → Anklets only
+
+Children's Jewelry → Children's Jewelry only
+
+Never show pendant sets when necklace sets are requested.
+
+Never show rings when earrings are requested.
+
+Never show bangles when bracelets are requested unless explicitly allowed.
+
+--------------------------------------------------
+DESIGN MATCHING
+--------------------------------------------------
+
+Prioritize products with:
+
+• same silhouette
+• same motif language
+• same craftsmanship
+• same construction
+• same wear style
+• same luxury level
+• same Heritage DNA
+
+Do not recommend products that only share gemstone color.
+
+--------------------------------------------------
+RESULT QUALITY
+--------------------------------------------------
+
+Return the closest matches first.
+
+Prefer fewer highly accurate results over many weak matches.
+
+Never include poor matches simply to increase result count.
+
+--------------------------------------------------
+OUTPUT
+--------------------------------------------------
+
+For every product return:
+
+• Product Image
+• Product Code
+• Product Name
+• Price
+• Similarity %
+• Why it matches
+• Product Link
+
+--------------------------------------------------
+NO RESULTS
+--------------------------------------------------
+
+If no strong match exists:
+
+State that no close Heritage match is available.
+
+Then recommend the closest available alternatives with an explanation.
+
+Never fabricate products.
+
+--------------------------------------------------
+FINAL RULE
+--------------------------------------------------
+
+Customer trust is more important than showing more products.
+
+Only recommend products you genuinely consider strong matches.

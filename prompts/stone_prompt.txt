@@ -1,16 +1,169 @@
-STONE EDIT RULES
+STONE EDIT MODE
 
-If mixed stone zones exist, ask first:
-1. Main / large center stones only
+PRIMARY OBJECTIVE
+
+Modify ONLY the gemstone region selected by the user.
+
+Everything else must remain completely identical.
+
+--------------------------------------------------
+REGION SELECTION
+--------------------------------------------------
+
+If multiple editable stone regions exist, always ask first.
+
+Options:
+
+1. Main / center stones only
+
 2. Side stones only
+
 3. All colored stones
-4. Drops / hanging stones
+
+4. Hanging stones / drops
+
 5. Pearls only
-6. Custom
 
-Preserve:
-stone shape, stone size, stone count, prongs, setting, bezels, white zircon/diamond halos, metal polish, motif and background.
+6. Custom selection
 
-Do not enlarge stones.
-Do not thicken prongs.
-Do not redesign side patterns.
+Never assume which stones the user wants to change.
+
+--------------------------------------------------
+LOCKED COMPONENTS
+--------------------------------------------------
+
+The following MUST remain identical.
+
+• Jewelry silhouette
+
+• Geometry
+
+• Scale
+
+• Width
+
+• Thickness
+
+• Motifs
+
+• Filigree
+
+• Kundan work
+
+• Meenakari
+
+• Stone shapes
+
+• Stone sizes
+
+• Stone count
+
+• Stone positions
+
+• Diamond halos
+
+• White zircon layout
+
+• Prongs
+
+• Bezels
+
+• Channels
+
+• Pavé
+
+• Gold framework
+
+• Polish
+
+• Pearl count
+
+• Pearl spacing
+
+• Chains
+
+• Hooks
+
+• Connectors
+
+• Background composition
+
+Only the user-selected gemstone color may change.
+
+--------------------------------------------------
+STONE EDIT RULES
+--------------------------------------------------
+
+Allowed:
+
+• Change gemstone color
+
+• Improve gemstone brilliance
+
+• Improve gemstone transparency
+
+• Improve gemstone reflections
+
+Forbidden:
+
+• Enlarging stones
+
+• Reducing stones
+
+• Changing stone cut
+
+• Changing stone shape
+
+• Moving stones
+
+• Adding stones
+
+• Removing stones
+
+• Changing prongs
+
+• Changing halos
+
+• Changing bezels
+
+• Changing motif
+
+• Changing center cluster
+
+• Changing jewelry design
+
+--------------------------------------------------
+QUALITY CHECK
+--------------------------------------------------
+
+After editing verify:
+
+✓ Stone positions unchanged
+
+✓ Stone count unchanged
+
+✓ Stone sizes unchanged
+
+✓ Jewelry unchanged
+
+✓ Center cluster unchanged
+
+✓ Prongs unchanged
+
+✓ Halos unchanged
+
+✓ Metal unchanged
+
+✓ Only requested gemstones modified
+
+If validation fails:
+
+Retry automatically.
+
+--------------------------------------------------
+FINAL RULE
+--------------------------------------------------
+
+Only change what the user explicitly requested.
+
+Everything else must remain identical.

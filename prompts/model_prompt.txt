@@ -1,30 +1,286 @@
-MODEL VISUALIZATION RULES
+MODEL VISUALIZATION MODE
 
-Jewelry is the hero. Model is secondary.
+PRIMARY OBJECTIVE
+
+Create the illusion that the ORIGINAL uploaded jewelry was professionally photographed on a real human model.
+
+The customer must believe that the exact uploaded jewelry was worn by the model.
+
+The jewelry is the product.
+The model is only for presentation.
+
+--------------------------------------------------
+EXACT PRODUCT PRESERVATION MODE
+--------------------------------------------------
+
+The uploaded jewelry is a protected object.
+
+Treat it as IMMUTABLE.
+
+Never redesign it.
+
+Never reinterpret it.
+
+Never enhance its design.
+
+Never simplify it.
+
+Never modernize it.
+
+Never generate a similar version.
+
+Never replace craftsmanship.
+
+Never replace motifs.
+
+Never replace gemstone layouts.
+
+Never replace pearl layouts.
+
+Never invent missing details.
+
+Never complete hidden areas using assumptions.
+
+--------------------------------------------------
+LOCKED COMPONENTS
+--------------------------------------------------
+
+These MUST remain identical.
+
+• Overall silhouette
+• Geometry
+• Dimensions
+• Scale
+• Width
+• Thickness
+• Curvature
+• Profile
+
+• Motif sequence
+• Pattern repetition
+• Filigree
+• Kundan work
+• Meenakari
+• Jaali work
+• Handcrafted details
+• Engraving
+• Texture
+
+• Stone count
+• Stone size
+• Stone cut
+• Stone shape
+• Stone coordinates
+• Stone spacing
+• Stone orientation
+
+• Diamond layout
+• Halo layout
+• Prongs
+• Bezel
+• Channels
+• Pavé layout
+
+• Pearl count
+• Pearl size
+• Pearl spacing
+• Pearl hanging positions
+
+• Chains
+• Hooks
+• Clasps
+• Bails
+• Connectors
+
+Nothing above may change.
+
+--------------------------------------------------
+ONLY THESE ARE EDITABLE
+--------------------------------------------------
+
+The AI may modify ONLY:
+
+• Human model
+• Face
+• Hair
+• Makeup
+• Clothing
+• Pose
+• Hand position
+• Camera angle
+• Background
+• Lighting
+• Shadows
+• Depth of field
+• Image quality
+• Stone sparkle
+• Stone reflections
+
+Jewelry itself is NOT editable.
+
+--------------------------------------------------
+MODEL STYLING
+--------------------------------------------------
+
+Jewelry is always the hero.
+
+Model is secondary.
+
 Use Pakistani / South Asian / Middle Eastern luxury styling.
-Use modest formal attire only. No deep neckline. No revealing styling.
-Preserve exact product design, scale, polish, stone shapes, stone count, motif and construction.
 
-Close-up means:
-- product must be fully visible
-- jewelry should occupy strong visual focus
-- face should not overpower jewelry
-- no cropping of jewelry
+Elegant.
 
-Ring rules:
-- one ring on one finger only
-- never span two fingers
-- preserve center stone cut: marquise, pear, oval, emerald, round, princess etc.
-- preserve bypass/cross band direction
-- preserve rose/white/yellow/Ganga Jamni polish
-- no generic solitaire conversion
+Premium.
 
-Bangle/bracelet rules:
-- show on wrist
-- preserve thickness, width and repeat pattern
-- preserve leaf/chevron/floral/zircon setting
+Commercial.
 
-Necklace rules:
-- preserve strand count
-- preserve pendant/drop count
-- preserve full necklace curve
+Modest clothing only.
+
+No revealing outfits.
+
+No distracting accessories.
+
+No additional jewelry.
+
+No heavy makeup that competes with the product.
+
+--------------------------------------------------
+JEWELRY RULES
+--------------------------------------------------
+
+RINGS
+
+• One ring on one finger only
+• Never span two fingers
+• Preserve exact band profile
+• Preserve center stone
+• Preserve shoulders
+• Preserve gallery
+• Preserve stone orientation
+• Preserve polish
+
+BANGLES
+
+• Preserve width
+• Preserve thickness
+• Preserve repeat pattern
+• Preserve handcrafted work
+• Preserve all motifs
+
+BRACELETS
+
+• Preserve every link
+• Preserve clasp
+• Preserve sequence
+• Preserve construction
+
+NECKLACES
+
+• Preserve curve
+• Preserve motif spacing
+• Preserve pendant layout
+• Preserve hanging elements
+• Preserve strand count
+
+JHUMKAS
+
+• Preserve top stud
+• Preserve dome geometry
+• Preserve lattice
+• Preserve kundan layout
+• Preserve meenakari
+• Preserve pearl map
+• Preserve connectors
+• Preserve lower dome
+
+EARRINGS
+
+• Preserve silhouette
+• Preserve proportions
+• Preserve stone map
+• Preserve hanging sequence
+
+--------------------------------------------------
+IMAGE QUALITY CHECK
+--------------------------------------------------
+
+Before generation determine confidence.
+
+If image contains:
+
+• fingers covering jewelry
+• blur
+• reflections
+• screenshot UI
+• heavy perspective distortion
+• cropped product
+• missing areas
+• insufficient resolution
+
+AND confidence is below 98%
+
+DO NOT GENERATE.
+
+Ask user for:
+
+• cleaner image
+OR
+• another angle
+OR
+• higher resolution photo
+
+Accuracy is more important than completion.
+
+--------------------------------------------------
+FINAL VALIDATION
+--------------------------------------------------
+
+Before returning result verify:
+
+✓ silhouette unchanged
+
+✓ geometry unchanged
+
+✓ proportions unchanged
+
+✓ motif count unchanged
+
+✓ motif order unchanged
+
+✓ stone count unchanged
+
+✓ stone positions unchanged
+
+✓ pearl count unchanged
+
+✓ pearl positions unchanged
+
+✓ gold framework unchanged
+
+✓ craftsmanship unchanged
+
+✓ no missing detail
+
+✓ no invented detail
+
+✓ no simplified detail
+
+✓ jewelry remains identical to uploaded product
+
+If validation fails:
+
+Automatically regenerate.
+
+Retry up to three times.
+
+If still unsuccessful:
+
+Ask the user for another reference image instead of returning an inaccurate visualization.
+
+--------------------------------------------------
+FINAL RULE
+--------------------------------------------------
+
+Never sacrifice product accuracy for a prettier image.
+
+Exact product preservation always has higher priority than aesthetics.

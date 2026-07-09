@@ -48,8 +48,8 @@ SIMILAR_PAGE_SIZE = int(os.getenv("SIMILAR_PAGE_SIZE", "5"))
 # ==============================
 
 LOG_FILE = os.getenv("LOG_FILE", "logs/heritage.log")
-CATALOG_FILE = os.getenv("CATALOG_FILE", "cache/heritage_catalog_v7.json")
-SESSION_FILE = os.getenv("SESSION_FILE", "cache/sessions_v7.json")
+CATALOG_FILE = os.getenv("CATALOG_FILE", "cache/heritage_catalog_v9.json")
+SESSION_FILE = os.getenv("SESSION_FILE", "cache/sessions_v9.json")
 
 # ==============================
 # EXACT PRODUCT PRESERVATION MODE
@@ -57,16 +57,22 @@ SESSION_FILE = os.getenv("SESSION_FILE", "cache/sessions_v7.json")
 
 EXACT_PRODUCT_MODE = True
 
-# Minimum confidence required before /model generation starts.
-# If confidence is lower than this, system should ask for a clearer image.
 MIN_MODEL_CONFIDENCE = int(os.getenv("MIN_MODEL_CONFIDENCE", "98"))
-
-# Minimum similarity required after generation.
-# If generated jewelry is below this score, result should be rejected.
 MODEL_SIMILARITY_THRESHOLD = int(os.getenv("MODEL_SIMILARITY_THRESHOLD", "97"))
-
-# Number of automatic retries if model visualization fails validation.
 MODEL_MAX_RETRIES = int(os.getenv("MODEL_MAX_RETRIES", "3"))
+
+# ==============================
+# VALIDATION / SCORING
+# ==============================
+
+VALIDATION_ENABLED = True
+VALIDATION_PLACEHOLDER_MODE = True
+
+MIN_GEOMETRY_SCORE = int(os.getenv("MIN_GEOMETRY_SCORE", "95"))
+MIN_STONE_LAYOUT_SCORE = int(os.getenv("MIN_STONE_LAYOUT_SCORE", "95"))
+MIN_MOTIF_SCORE = int(os.getenv("MIN_MOTIF_SCORE", "95"))
+MIN_PEARL_LAYOUT_SCORE = int(os.getenv("MIN_PEARL_LAYOUT_SCORE", "95"))
+MIN_OVERALL_PRESERVATION_SCORE = int(os.getenv("MIN_OVERALL_PRESERVATION_SCORE", "97"))
 
 # ==============================
 # LOCKED JEWELRY COMPONENTS
